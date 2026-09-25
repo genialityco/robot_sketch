@@ -35,16 +35,17 @@
     ]
   },
   "z_adjust_mm": {
-    "top_left": -7.0,
-    "top_right": -7.0,
-    "bottom_right": -3.0,
-    "bottom_left": -4.0
+    "top_left": -8.0,
+    "top_right": -8.0,
+    "bottom_right": -4.0,
+    "bottom_left": -5.0
   },
   "center_z": 79.9,
-  "center_z_adjust_mm": -5.0,
+  "center_z_adjust_mm": -7.0,
   "manual_skew_mm": 1.0,
   "pen_lift_mm": 15.0,
   "drawing_rotation": 90,
+  "j1_backlash_deg": 2.0,
   "id": "frente-hor",
-  "updated_at": "2026-09-25 14:47"
+  "updated_at": "2026-09-25 17:53"
 }

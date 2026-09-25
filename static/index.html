@@ -71,6 +71,7 @@
         <label>Nombre <input type="text" id="cal-name" maxlength="60"></label>
         <label>Ajuste fino de inclinación (mm) <input type="number" id="cal-skew" step="0.5"></label>
         <label>Levantado de pluma (mm) <input type="number" id="cal-lift" step="1"></label>
+        <label>Juego de la base (°) <input type="number" id="cal-backlash" step="0.1" min="0" max="4" title="Compensa el juego de la articulación de la base (J1): cuánto gira sin mover la pluma al cambiar de sentido. 0 = sin compensar. Medido ~1.5°."></label>
         <label>Orientación del dibujo
           <select id="cal-rotation">
             <option value="0">0° (cabeza hacia las esquinas de arriba)</option>
@@ -90,11 +91,12 @@
 
     <section class="stage">
       <h2>Probar calibración</h2>
-      <p class="status">Usa el perfil activo. El contorno recorre el borde del área (2 mm hacia adentro). <span id="cal-pattern-desc"></span></p>
+      <p class="status">Usa el perfil activo. El contorno recorre el borde del área (2 mm hacia adentro). <span id="cal-pattern-desc"></span> <span id="cal-face-desc"></span></p>
       <p class="warning" id="cal-test-inactive"></p>
       <div class="row">
         <button id="cal-test-outline">Dibujar contorno</button>
         <button id="cal-test-pattern">Dibujar patrón de prueba</button>
+        <button id="cal-test-face" title="Cara, ojos, nariz y boca, girados según la orientación guardada del perfil activo">Dibujar rostro</button>
         <button id="cal-test-precision" class="secondary">Prueba de precisión</button>
       </div>
       <p class="status">La prueba de precisión mide, en 9 puntos de la hoja, a cuántos mm del punto pedido queda realmente el brazo: con la pluma en el aire, apoyada, y después de movimientos cortos de 5 mm. Sirve para saber si los rasgos chicos (ojos, boca) se deforman por la fricción del esfero, por el juego de los servos o por un corrimiento fijo. Deja unas crucecitas en el papel (~2 min).</p>

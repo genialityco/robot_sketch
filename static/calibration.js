@@ -162,6 +162,7 @@
     el('cal-name').value = profile.name;
     el('cal-skew').value = profile.manual_skew_mm;
     el('cal-lift').value = profile.pen_lift_mm;
+    el('cal-backlash').value = profile.j1_backlash_deg || 0;
     el('cal-rotation').value = String(profile.drawing_rotation_resolved);
     el('cal-rotation-info').textContent = 'El preview muestra la hoja con las esquinas "arriba" hacia arriba, ' +
       'como la ves al medirla. Girá el dibujo solo si querés la cabeza hacia otro lado de la hoja.';
@@ -210,7 +211,7 @@
       const p = t.progress || { i: 0, total: 1 };
       prog.value = p.total ? Math.round((100 * p.i) / p.total) : 0;
       el('cal-test-message').textContent = ({ outline: 'Dibujando contorno', pattern: 'Dibujando patrón',
-        precision: 'Midiendo precisión' }[t.kind] || 'Probando') +
+        face: 'Dibujando rostro', precision: 'Midiendo precisión' }[t.kind] || 'Probando') +
         '… ' + (t.message || '') + (t.progress ? ' (' + t.progress.i + '/' + t.progress.total + ')' : '');
     } else {
       prog.classList.add('hidden');
@@ -231,6 +232,7 @@
     const isActive = state.profile && state.profile.id === state.active_id;
     el('cal-test-outline').disabled = robotBusy || !isActive;
     el('cal-test-pattern').disabled = robotBusy || !isActive;
+    el('cal-test-face').disabled = robotBusy || !isActive;
     el('cal-test-precision').disabled = robotBusy || !isActive;
     el('cal-activate').disabled = robotBusy || isActive;
     el('cal-delete').disabled = isActive;
@@ -260,6 +262,10 @@
       (s < 100 ? ', achicado para entrar: a tamaño completo mide 100 mm' : '') + ') dibuja un marco de ' +
       mm(1) + ', un cuadrado de ' + mm(0.5) + ', un círculo de ' + mm(0.36) + ' y 20 rayitas de ' + mm(0.05) +
       ' para medir escala, esquinas y ganchos.';
+    const rot = state.active_rotation;
+    el('cal-face-desc').textContent = 'El rostro (cara, ojos, nariz y boca) sale como un retrato con la ' +
+      'orientación guardada del perfil activo: ' + (rot ? 'girado ' + rot + '° antihorario' :
+      'la frente hacia las esquinas de arriba') + '.';
   }
 
   function apply(data, refillForm) {
@@ -315,6 +321,7 @@
       name: el('cal-name').value.trim(),
       manual_skew_mm: Number(el('cal-skew').value),
       pen_lift_mm: Number(el('cal-lift').value),
+      j1_backlash_deg: Number(el('cal-backlash').value || 0),
       drawing_rotation: el('cal-rotation').value,
       center_z: el('cal-center-z').value === '' ? null : Number(el('cal-center-z').value),
       center_z_adjust_mm: Number(el('cal-center-adj').value || 0),
@@ -356,7 +363,7 @@
     apply(await api(profileUrl(), 'PUT', readForm()), true);
   }));
 
-  ['cal-name', 'cal-skew', 'cal-lift', 'cal-rotation'].forEach((id) => el(id).addEventListener('input', markDirty));
+  ['cal-name', 'cal-skew', 'cal-lift', 'cal-backlash', 'cal-rotation'].forEach((id) => el(id).addEventListener('input', markDirty));
 
   // --- Esquinas ------------------------------------------------------------
   function labelOf(corner) {
@@ -427,6 +434,7 @@
   }
   el('cal-test-outline').addEventListener('click', testAction('outline', 'contorno del área'));
   el('cal-test-pattern').addEventListener('click', testAction('pattern', 'patrón de prueba'));
+  el('cal-test-face').addEventListener('click', testAction('face', 'rostro de prueba'));
   el('cal-test-precision').addEventListener('click', testAction('precision', 'crucecitas de la prueba de precisión'));
 
   // nombre del perfil activo en el encabezado, tambien en la pestaña Dibujar

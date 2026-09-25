@@ -159,18 +159,21 @@ def _center_z_correction(u, v):
 
 
 def set_calibration(top_left, top_right, bottom_right, bottom_left,
-                    manual_skew_mm=None, pen_lift_mm=None, center_z=None):
+                    manual_skew_mm=None, pen_lift_mm=None, center_z=None, j1_backlash_deg=None):
     """Reemplaza en caliente las 4 esquinas medidas (y opcionalmente el ajuste
-    fino y el levantado de pluma), sin editar este archivo. Lo usa la app web
-    para aplicar perfiles de calibracion. center_z (ver CENTER_Z) se aplica
-    siempre: None = sin punto de centro."""
+    fino, el levantado de pluma y el juego de la base), sin editar este
+    archivo. Lo usa la app web para aplicar perfiles de calibracion. center_z
+    (ver CENTER_Z) se aplica siempre: None = sin punto de centro."""
     global TOP_LEFT, TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT, MANUAL_SKEW_MM, PEN_LIFT_MM, CENTER_Z
+    global J1_BACKLASH_DEG
     TOP_LEFT, TOP_RIGHT = list(top_left), list(top_right)
     BOTTOM_RIGHT, BOTTOM_LEFT = list(bottom_right), list(bottom_left)
     if manual_skew_mm is not None:
         MANUAL_SKEW_MM = manual_skew_mm
     if pen_lift_mm is not None:
         PEN_LIFT_MM = pen_lift_mm
+    if j1_backlash_deg is not None:
+        J1_BACKLASH_DEG = j1_backlash_deg
     CENTER_Z = center_z
     _recompute_regularized()
 
@@ -178,7 +181,88 @@ def set_calibration(top_left, top_right, bottom_right, bottom_left,
 def get_calibration():
     return dict(top_left=list(TOP_LEFT), top_right=list(TOP_RIGHT),
                 bottom_right=list(BOTTOM_RIGHT), bottom_left=list(BOTTOM_LEFT),
-                manual_skew_mm=MANUAL_SKEW_MM, pen_lift_mm=PEN_LIFT_MM, center_z=CENTER_Z)
+                manual_skew_mm=MANUAL_SKEW_MM, pen_lift_mm=PEN_LIFT_MM, center_z=CENTER_Z,
+                j1_backlash_deg=J1_BACKLASH_DEG)
+
+
+# Juego (holgura) de la articulacion de la base, J1, en grados. Medido en papel
+# (2026-09-25, hoja a ~204 mm de la base): cada vez que la base cambia de
+# sentido de giro, la pluma no se mueve durante los primeros ~5-6 mm (~1.5
+# grados), asi que los movimientos cortos de lado (eje Y del robot) salen
+# achicados o desaparecen -- la base de un triangulo de 8 mm quedaba en un
+# punto, los ojos salian 4-5 mm mas angostos -- mientras que en X (alejarse /
+# acercarse a la base) el dibujo sale bien. get_coords no lo muestra (lee
+# mal: ver la prueba de precision). 0 = sin compensar.
+J1_BACKLASH_DEG = 0.0
+# Movimientos de la base mas chicos que esto (mm de arco) no cambian el
+# sentido de giro que se esta compensando: evita saltos de todo el juego por
+# el ruido de giro de un trazo que va casi derecho en X.
+J1_BACKLASH_MIN_MOVE_MM = 0.3
+
+
+class J1Backlash:
+    """
+    Compensa el juego de J1 como una fresadora CNC: guarda hacia que lado esta
+    apoyado el engranaje y, cuando el giro de la base cambia de sentido, manda
+    el punto medio juego mas alla en el sentido nuevo (y medio juego mas alla
+    en todo el giro siguiente en ese sentido). Asi la pluma, que queda medio
+    juego atrasada respecto de lo que se manda, cae donde se pidio. Solo gira
+    x,y alrededor del eje de la base; radio, z y orientacion no cambian.
+    """
+
+    def __init__(self, backlash_deg):
+        self.half = math.radians(backlash_deg) / 2
+        # giro de la base hasta donde se llego en el sentido de apoyo actual (o,
+        # sin sentido todavia, el ultimo): los cambios de sentido se miden desde
+        # aca y no paso a paso. Cerca de la punta de una curva cada paso gira la
+        # base menos que J1_BACKLASH_MIN_MOVE_MM; comparando solo con el paso
+        # anterior el cambio de sentido no se detectaba nunca, la pluma quedaba
+        # quieta en Y y la media curva siguiente salia recta (visto: la
+        # medialuna de abajo de los ojos, la mas chata, salia como una raya).
+        self.peak = None
+        self.engaged = 0    # +1 / -1: sentido de giro en que esta apoyado el engranaje
+        self.last = None    # ultimo punto pedido (donde deberia estar la pluma)
+
+    def direction(self, a, b):
+        """Sentido de giro de la base para ir de a a b (0 si es casi nada)."""
+        ta, tb = math.atan2(a[1], a[0]), math.atan2(b[1], b[0])
+        if abs(tb - ta) * math.hypot(b[0], b[1]) < J1_BACKLASH_MIN_MOVE_MM:
+            return 0
+        return 1 if tb > ta else -1
+
+    def _new_direction(self, coords):
+        """Sentido de apoyo que corresponde al ir a `coords` (el actual si no cambia)."""
+        if self.peak is None:
+            return self.engaged
+        theta = math.atan2(coords[1], coords[0])
+        moved_mm = (theta - self.peak) * math.hypot(coords[0], coords[1])
+        if self.engaged and moved_mm * self.engaged >= 0:
+            return self.engaged
+        if abs(moved_mm) < J1_BACKLASH_MIN_MOVE_MM:
+            return self.engaged
+        return 1 if moved_mm > 0 else -1
+
+    def reversal(self, coords):
+        """Sentido nuevo si ir a `coords` invierte el giro de la base, si no 0."""
+        if self.half <= 0 or self.last is None or not self.engaged:
+            return 0
+        d = self._new_direction(coords)
+        return d if d != self.engaged else 0
+
+    def command(self, coords, engage=None):
+        """coords donde tiene que quedar la pluma -> coords a mandar. engage
+        (+1/-1) fuerza el sentido de apoyo (precarga antes de bajar la pluma)."""
+        if self.half <= 0:
+            return list(coords)
+        x, y = coords[0], coords[1]
+        r, theta = math.hypot(x, y), math.atan2(y, x)
+        d = engage or self._new_direction(coords)
+        if d != self.engaged or self.peak is None or (theta - self.peak) * d > 0:
+            self.peak = theta   # sentido nuevo, o se avanzo mas en el mismo
+        self.engaged = d
+        self.last = list(coords)
+        cmd = theta + self.engaged * self.half
+        return [r * math.cos(cmd), r * math.sin(cmd)] + list(coords[2:])
 
 
 def calibration_diagnostics(top_left, top_right, bottom_right, bottom_left):
@@ -666,15 +750,29 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
     # llegada; sync_waits: cuanto tuvo que esperar cada sincronizacion (si
     # son largas, el brazo iba atrasado respecto de lo que se le mandaba)
     state = {'xyz': None, 'since_sync': 0, 'sync_waits': [], 'sync_results': []}
+    backlash = J1Backlash(J1_BACKLASH_DEG)
+    if J1_BACKLASH_DEG > 0:
+        print(f'Compensando juego de la base (J1): {J1_BACKLASH_DEG:g} grados.', flush=True)
 
     def note_error(point, code):
         if code:
             robot_errors.append((point, code, _describe_error(code)))
 
-    def send(coords, speed, settle, label):
+    def send(coords, speed, settle, label, engage=None):
         """Manda un punto y espera: a que se asiente si `settle` (subidas y
-        bajadas de pluma), o la pausa por distancia en el resto."""
+        bajadas de pluma), o la pausa por distancia en el resto. `coords` es
+        donde tiene que quedar la pluma; lo que se manda pasa por la
+        compensacion del juego de J1 (engage: ver J1Backlash.command)."""
         nonlocal errors
+        if engage is None:
+            d = backlash.reversal(coords)
+            if d:
+                # la base cambia de sentido: tomar el juego quieto sobre el punto
+                # anterior y recien despues avanzar. Si se toma en el mismo
+                # movimiento que avanza, la pluma recorre ese tramo solo en el
+                # otro eje y queda un escalon.
+                send(backlash.last, speed, settle=False, label=f'toma del juego antes de {label}', engage=d)
+        coords = backlash.command(coords, engage)
         try:
             mc.send_coords(coords, speed, MOVE_MODE)
         except Exception as exc:
@@ -710,7 +808,21 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
                       f'{"?" if off is None else f"{off:.1f}"} mm (x,y) del punto pedido', flush=True)
                 state['since_sync'] = 0
 
-    for i, total, x_local, y_local, pen_down, coords in iter_target_coords(moves, preserve_aspect, bounds):
+    targets = list(iter_target_coords(moves, preserve_aspect, bounds))
+
+    def first_stroke_direction(k):
+        """Sentido de giro de la base del primer tramo que mueve J1 en el
+        trazo que empieza (pluma abajo) en targets[k]; 0 si el trazo no gira la base."""
+        start = targets[k][5]
+        for t in targets[k + 1:]:
+            if not t[4]:
+                return 0
+            d = backlash.direction(start, t[5])
+            if d:
+                return d
+        return 0
+
+    for idx, (i, total, x_local, y_local, pen_down, coords) in enumerate(targets):
 
         speed = DRAW_SPEED if pen_down else TRAVEL_SPEED
         estado = 'ABAJO' if pen_down else 'ARRIBA'
@@ -750,6 +862,15 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
         # este apoyado antes de mandar el primer movimiento de lado.
         landing = pen_down and prev_pen_down is False
         send(coords, speed, settle=landing, label=f'punto {i}')
+
+        # Entrada con la pluma arriba: si el trazo siguiente arranca girando la
+        # base al reves de como llego el brazo, se toma el juego de J1 en el aire
+        # (la pluma no se mueve, solo el engranaje cambia de lado) en vez de al
+        # empezar a dibujar, donde se perdian los primeros mm del trazo.
+        if (not pen_down and backlash.half > 0 and idx + 1 < len(targets) and targets[idx + 1][4]):
+            d = first_stroke_direction(idx + 1)
+            if d and d != backlash.engaged:
+                send(coords, speed, settle=False, label=f'precarga del juego antes del punto {i + 1}', engage=d)
 
         prev_pen_down = pen_down
         prev_coords = coords
@@ -868,6 +989,68 @@ def test_pattern_moves():
     for k in range(10):
         x = 5 + 9.5 * k
         moves += at([(x, 10), (x + 5, 10)])
+    return moves
+
+
+FACE_MAX_HEIGHT_MM = 100        # alto de la cara (frente a menton) si el area lo permite
+FACE_MIN_HEIGHT_MM = 40
+FACE_MARGIN_MM = 5.0
+
+
+def test_face_moves(rotation_deg=0):
+    """
+    Rostro generico (contorno ovalado, ojos en forma de almendra con pupila,
+    nariz triangular y boca de dos curvas con la linea del medio), centrado
+    en el area calibrada, en mm reales (usar con area_bounds()). Con
+    rotation_deg=0 la frente apunta a las esquinas "arriba" del perfil; se
+    gira igual que pipeline.rotate_moves
+    (antihorario, multiplo de 90), asi que sale orientado como saldria un
+    retrato con ese perfil. Lanza ValueError si el area no da ni para
+    FACE_MIN_HEIGHT_MM.
+    """
+    def ellipse(cx, cy, rx, ry, n, a0=0.0, a1=2 * math.pi):
+        return [(cx + rx * math.cos(a0 + (a1 - a0) * k / n), cy + ry * math.sin(a0 + (a1 - a0) * k / n))
+                for k in range(n + 1)]
+
+    def arc(x0, x1, y, bulge, n=24):
+        # curva de (x0, y) a (x1, y) que se aparta `bulge` en el medio (+ arriba, - abajo);
+        # con forma de seno, asi dos curvas con las mismas puntas cierran en punta
+        return [(x0 + (x1 - x0) * k / n, y + bulge * math.sin(math.pi * k / n)) for k in range(n + 1)]
+
+    def almond(cx, cy, half_w, up, down, middle=False):
+        # dos medialunas separadas, las dos de izquierda a derecha, que se juntan en las
+        # puntas (+ la linea recta del medio si middle). No va en un solo trazo: al dar la
+        # vuelta en la punta con la pluma apoyada, la friccion la arrastra por el mismo
+        # lado y la punta sale como una raya en vez de cerrar.
+        x0, x1 = cx - half_w, cx + half_w
+        strokes = [arc(x0, x1, cy, up), arc(x0, x1, cy, -down)]
+        if middle:
+            strokes.append([(x0, cy), (x1, cy)])
+        return strokes
+
+    # diseno con la cara de 100 de alto centrada en (0, 0), y hacia arriba = frente
+    strokes = [
+        ellipse(0, 0, 38, 50, 96),                                       # cara
+        *almond(-14, 10, 9, 5, 3.5), *almond(14, 10, 9, 5, 3.5),         # ojos
+        ellipse(-14, 10.5, 2.2, 2.2, 16), ellipse(14, 10.5, 2.2, 2.2, 16),  # pupilas
+        [(0, 4), (-5, -9), (5, -9), (0, 4)],                             # nariz
+        *almond(0, -22, 17, 4, 6, middle=True),                          # boca
+    ]
+    turns = (int(rotation_deg) // 90) % 4
+    rot = {0: lambda x, y: (x, y), 1: lambda x, y: (-y, x),
+           2: lambda x, y: (-x, -y), 3: lambda x, y: (y, -x)}[turns]
+    strokes = [[rot(x, y) for x, y in s] for s in strokes]
+    design_w, design_h = (100, 76) if turns % 2 else (76, 100)
+
+    _, w, _, h = area_bounds()
+    s = min((w - 2 * FACE_MARGIN_MM) / design_w, (h - 2 * FACE_MARGIN_MM) / design_h,
+            FACE_MAX_HEIGHT_MM / 100)
+    if 100 * s < FACE_MIN_HEIGHT_MM:
+        raise ValueError(f'el area calibrada ({w:.0f}x{h:.0f} mm) es demasiado chica para el rostro '
+                         f'(minimo {FACE_MIN_HEIGHT_MM} mm de alto).')
+    moves = []
+    for points in strokes:
+        moves += _stroke([(w / 2 + x * s, h / 2 + y * s) for x, y in points])
     return moves
 
 

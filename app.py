@@ -430,7 +430,7 @@ def _start_draw(job):
 CAL_TASK = dict(kind=None, running=False, progress=None, message=None, error=None, robot_errors=[],
                 sync=None, log=None, precision=None)
 TEST_KINDS = {'outline': 'prueba del contorno del area', 'pattern': 'prueba del patron',
-              'precision': 'prueba de precision'}
+              'precision': 'prueba de precision', 'face': 'prueba del rostro'}
 
 
 def _cal_state(selected_id=None):
@@ -443,6 +443,7 @@ def _cal_state(selected_id=None):
         profile=cal.describe(cal.load(sel)) if sel else None,
         area_mm=cal.area_mm(),
         pattern_mm=round(pl.lib.test_pattern_size(), 1),
+        active_rotation=cal.active_rotation_deg(),
         robot=dict(connected=robot.is_connected(), busy=robot.BUSY['what'],
                    fresh_mode=str(pl.lib.LAST_FRESH_MODE) if pl.lib.LAST_FRESH_MODE is not None else None),
         task=dict(CAL_TASK),
@@ -634,12 +635,15 @@ def _run_cal_task(kind, moves):
 
 @app.route('/api/calibration/test/<kind>', methods=['POST'])
 def calibration_test(kind):
-    """Dibuja el contorno del area o el patron de prueba con el perfil activo."""
+    """Dibuja el contorno del area, el patron de prueba o un rostro generico
+    (girado segun la orientacion del perfil) con el perfil activo."""
     if kind not in TEST_KINDS:
         return jsonify(error='prueba invalida'), 400
     try:
         if kind == 'precision':
             moves = []
+        elif kind == 'face':
+            moves = pl.lib.test_face_moves(cal.active_rotation_deg())
         else:
             moves = pl.lib.outline_moves() if kind == 'outline' else pl.lib.test_pattern_moves()
     except ValueError as exc:

@@ -104,9 +104,21 @@ def _validate(profile):
         rotation = None
     if rotation not in (0, 90, 180, 270):
         raise ValueError('la orientacion del dibujo debe ser 0, 90, 180 o 270')
+    try:
+        backlash = round(float(profile.get('j1_backlash_deg', 0) or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError('el juego de la base no es un numero')
+    if not 0 <= backlash <= J1_BACKLASH_MAX_DEG:
+        raise ValueError('el juego de la base debe estar entre 0 y %g grados' % J1_BACKLASH_MAX_DEG)
     return dict(name=name, corners=corners, z_adjust_mm=z_adjust, center_z=center_z,
                 center_z_adjust_mm=center_adjust, manual_skew_mm=skew, pen_lift_mm=lift,
-                drawing_rotation=rotation)
+                drawing_rotation=rotation, j1_backlash_deg=backlash)
+
+
+# Compensacion del juego de J1 (ver gcode_draw_lib.J1Backlash). Medido ~1.5
+# grados; mucho mas que esto seria un error de tipeo, y cada cambio de sentido
+# de la base haria un salto grande.
+J1_BACKLASH_MAX_DEG = 4
 
 
 # Una Z de centro mas lejos que esto del promedio de las esquinas no es una
@@ -213,6 +225,7 @@ def load(profile_id):
     data.setdefault('drawing_rotation', 0)
     data.setdefault('center_z', None)
     data.setdefault('center_z_adjust_mm', 0.0)
+    data.setdefault('j1_backlash_deg', 0.0)
     data.setdefault('z_adjust_mm', {})  # perfiles guardados antes de existir el ajuste
     for key in CORNERS:
         data['z_adjust_mm'].setdefault(key, 0.0)
@@ -245,7 +258,7 @@ def _apply(profile):
     c = effective_corners(profile)
     pl.lib.set_calibration(c['top_left'], c['top_right'], c['bottom_right'], c['bottom_left'],
                            manual_skew_mm=profile['manual_skew_mm'], pen_lift_mm=profile['pen_lift_mm'],
-                           center_z=effective_center_z(profile))
+                           center_z=effective_center_z(profile), j1_backlash_deg=profile['j1_backlash_deg'])
 
 
 def activate(profile_id):
@@ -270,7 +283,8 @@ def create(name, copy_from=None):
 def update(profile_id, changes):
     current = load(profile_id)
     merged = dict(current)
-    for key in ('name', 'manual_skew_mm', 'pen_lift_mm', 'drawing_rotation', 'center_z', 'center_z_adjust_mm'):
+    for key in ('name', 'manual_skew_mm', 'pen_lift_mm', 'drawing_rotation', 'center_z', 'center_z_adjust_mm',
+                'j1_backlash_deg'):
         if key in changes:
             merged[key] = changes[key]
     if 'corners' in changes:
