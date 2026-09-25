@@ -1,0 +1,149 @@
+:root {
+  --fg: #1a1a1a;
+  --bg: #ffffff;
+  --muted: #666;
+  --accent: #2563eb;
+  --danger: #b91c1c;
+  --border: #ddd;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #eaeaea;
+    --bg: #121212;
+    --muted: #aaa;
+    --accent: #60a5fa;
+    --danger: #f87171;
+    --border: #333;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  margin: 0;
+  padding: 16px;
+}
+
+header { max-width: 720px; margin: 0 auto 24px; }
+h1 { margin-bottom: 4px; }
+.subtitle { color: var(--muted); margin-top: 0; }
+
+main { max-width: 720px; margin: 0 auto; }
+
+.stage {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.hidden { display: none; }
+
+.side-by-side {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.side-by-side figure { margin: 0; flex: 1 1 260px; }
+.side-by-side img, #img-preview, #img-drawing {
+  width: 100%;
+  max-width: 100%;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+}
+figcaption { text-align: center; color: var(--muted); margin-top: 4px; }
+
+/* --- Recorte del boceto --- */
+.crop-wrap {
+  position: relative;
+  overflow: hidden;
+  margin-bottom: 12px;
+  line-height: 0;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.side-by-side .crop-wrap img { margin-bottom: 0; }
+.crop-box {
+  position: absolute;
+  border: 2px dashed var(--accent);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.row .status { margin: 0; flex: 1 1 240px; }
+
+.actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 15px;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+
+input[type="file"] { display: block; margin-bottom: 12px; }
+label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 14px; }
+
+.status { color: var(--muted); }
+.error { color: var(--danger); font-weight: 600; white-space: pre-wrap; }
+.warning { color: #b45309; font-weight: 600; }
+
+progress { width: 100%; height: 22px; }
+
+details { margin-top: 16px; }
+details input[type="file"] { margin-top: 8px; }
+
+/* --- Pestañas --- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 12px 0 8px; }
+.tab {
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px 6px 0 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  margin-bottom: -1px;
+}
+.tab.active { color: var(--fg); border-color: var(--border); background: var(--bg); font-weight: 600; }
+
+/* --- Calibracion --- */
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.row select { padding: 8px; font-size: 15px; flex: 1 1 220px; min-width: 0; }
+button.danger { color: var(--danger); border-color: var(--danger); }
+.steps { margin: 0 0 8px; padding-left: 20px; }
+.steps li { margin-bottom: 2px; }
+.coords { font-family: ui-monospace, Consolas, monospace; font-size: 13px; white-space: pre-wrap; margin: 8px 0 0; }
+
+.corner-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+@media (max-width: 560px) { .corner-grid { grid-template-columns: 1fr; } }
+.corner { border: 1px solid var(--border); border-radius: 6px; padding: 10px; }
+.corner h3 { margin: 0 0 6px; font-size: 15px; }
+.corner .axes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.corner .axes label, .fields label { margin: 0; font-size: 13px; }
+.corner input, .fields input, .fields select {
+  width: 100%;
+  padding: 5px 6px;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.corner .row button { padding: 6px 10px; font-size: 14px; }
+.corner .zadj { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: end; margin-top: 8px; }
+.corner .zadj label { flex: 0 1 170px; margin: 0; font-size: 13px; }
+.corner .zadj .status { font-size: 13px; }
+.center-card { margin-top: 12px; }
+.center-card > .status { margin: 0 0 4px; font-size: 13px; }
+.fields label { flex: 1 1 180px; }
+#cal-view progress { margin-top: 8px; }

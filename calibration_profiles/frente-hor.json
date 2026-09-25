@@ -1,0 +1,50 @@
+{
+  "name": "frente_hor",
+  "corners": {
+    "top_left": [
+      244.3,
+      68.6,
+      80.0,
+      174.63,
+      1.1,
+      61.39
+    ],
+    "top_right": [
+      252.3,
+      -70.8,
+      80.0,
+      177.87,
+      3.4,
+      46.98
+    ],
+    "bottom_right": [
+      170.0,
+      -76.9,
+      78.2,
+      -178.58,
+      3.93,
+      54.96
+    ],
+    "bottom_left": [
+      150.5,
+      61.4,
+      80.7,
+      178.48,
+      -0.03,
+      54.4
+    ]
+  },
+  "z_adjust_mm": {
+    "top_left": -7.0,
+    "top_right": -7.0,
+    "bottom_right": -3.0,
+    "bottom_left": -4.0
+  },
+  "center_z": 79.9,
+  "center_z_adjust_mm": -5.0,
+  "manual_skew_mm": 1.0,
+  "pen_lift_mm": 15.0,
+  "drawing_rotation": 90,
+  "id": "frente-hor",
+  "updated_at": "2026-09-25 14:47"
+}

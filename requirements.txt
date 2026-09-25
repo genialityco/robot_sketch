@@ -1,0 +1,23 @@
+flask>=3.0
+python-dotenv>=1.2
+google-genai>=2.24
+
+# Estas tres las necesita lib/draw_person.py para la extraccion de trazos, y
+# matplotlib ademas la usa pipeline.render_preview():
+opencv-python>=4.5
+numpy>=1.20
+matplotlib>=3.4
+
+# La necesita lib/gcode_draw_lib.py para conectarse al robot real:
+pymycobot>=3.0
+
+# Opcional: suaviza cada trazo con un B-spline en vez de dejarlo poligonal
+# (ver SMOOTH_STROKES_ENABLED en pipeline.py). Sin esto, cae con gracia al
+# cv2.approxPolyDP de siempre (trazos rectos entre esquinas).
+scipy>=1.10
+
+# Opcional: ubica ojos/nariz/boca en el boceto (dp.face_landmark_strokes)
+# para darles mas detalle al simplificar. Sin esto instalado, pipeline.py
+# usa una heuristica de posicion (degrada con gracia). Descarga un modelo de
+# ~4MB a lib/.cache/ la primera vez que se usa.
+mediapipe>=1.0

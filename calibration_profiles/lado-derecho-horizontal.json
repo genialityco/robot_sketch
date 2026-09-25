@@ -1,0 +1,50 @@
+{
+  "name": "lado_derecho_horizontal",
+  "corners": {
+    "top_left": [
+      86.4,
+      -244.4,
+      82.2,
+      173.62,
+      4.83,
+      32.67
+    ],
+    "top_right": [
+      -76.9,
+      -245.7,
+      80.7,
+      174.7,
+      1.9,
+      -5.98
+    ],
+    "bottom_right": [
+      -80.3,
+      -161.6,
+      77.0,
+      -177.29,
+      1.88,
+      -6.06
+    ],
+    "bottom_left": [
+      79.1,
+      -154.0,
+      80.1,
+      177.16,
+      1.93,
+      33.56
+    ]
+  },
+  "z_adjust_mm": {
+    "top_left": -2.0,
+    "top_right": -2.0,
+    "bottom_right": -2.0,
+    "bottom_left": -2.0
+  },
+  "center_z": 79.9,
+  "center_z_adjust_mm": -2.0,
+  "manual_skew_mm": 1.0,
+  "pen_lift_mm": 15.0,
+  "drawing_rotation": 90,
+  "id": "lado-derecho-horizontal",
+  "updated_at": "2026-09-25 09:18"
+}

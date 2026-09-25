@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>myCobot 280 · Foto a boceto</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Foto &rarr; boceto &rarr; robot</h1>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" id="tab-draw" role="tab" aria-selected="true">Dibujar</button>
+      <button class="tab" id="tab-cal" role="tab" aria-selected="false">Calibración</button>
+    </nav>
+    <p class="subtitle">Perfil de calibración activo: <strong id="active-profile-label">…</strong></p>
+  </header>
+
+  <main id="cal-view" class="hidden">
+
+    <section class="stage">
+      <h2>Perfil</h2>
+      <div class="row">
+        <select id="cal-profile" aria-label="Perfil de calibración"></select>
+        <button id="cal-activate">Usar este perfil</button>
+        <button id="cal-new" class="secondary">Nuevo perfil</button>
+        <button id="cal-delete" class="secondary danger">Eliminar</button>
+      </div>
+      <p class="status">Cada perfil guarda las 4 esquinas de una hoja/mesa. El perfil activo es el que usan el preview, el dibujo y las pruebas. Área útil del activo: <strong id="cal-area">…</strong></p>
+    </section>
+
+    <section class="stage">
+      <h2>Brazo</h2>
+      <p class="status" id="cal-robot-status"></p>
+      <div class="row">
+        <button id="cal-release">Liberar brazo</button>
+        <button id="cal-lock">Trabar brazo</button>
+        <button id="cal-read" class="secondary">Leer posición</button>
+        <button id="cal-disconnect" class="secondary">Cerrar conexión</button>
+      </div>
+      <p class="warning">Sostené el brazo antes de liberarlo: sin torque cae por su propio peso.</p>
+      <pre id="cal-coords" class="coords"></pre>
+    </section>
+
+    <section class="stage">
+      <h2>Esquinas de la hoja</h2>
+      <ol class="steps">
+        <li>Liberá el brazo.</li>
+        <li>Apoyá la punta del esfero justo en una esquina de la hoja, con el esfero vertical, y tocá <em>Capturar</em>.</li>
+        <li>Repetí en las 4 esquinas y trabá el brazo.</li>
+        <li>Verificá con <em>Ir encima</em> (queda 10 mm arriba) o <em>Tocar</em> (baja hasta el papel).</li>
+      </ol>
+      <p class="status">"Arriba" es el lado de la hoja más lejos del robot.</p>
+      <div class="corner-grid" id="cal-corners"></div>
+      <div class="corner center-card">
+        <h3>Centro de la hoja (solo altura)</h3>
+        <p class="status">Opcional. Corrige la altura en el medio de la hoja cuando no es plana entre las esquinas (se nota si un ajuste de altura cambia el contorno pero no el dibujo). Solo usa la Z: no cambia la forma ni el tamaño del área, y no afecta las esquinas ni el contorno. Para capturarlo, apoyá la punta en el centro de la hoja con el brazo liberado.</p>
+        <div class="zadj">
+          <label>Z medida <input type="number" step="0.1" id="cal-center-z" placeholder="sin medir"></label>
+          <label>Ajuste de altura (mm) <input type="number" step="0.1" min="-10" max="10" id="cal-center-adj" title="Negativo = sube (-1 = 1 mm más arriba). Positivo = baja (más presión)."></label>
+          <span class="status" id="cal-center-eff"></span>
+        </div>
+        <div class="row">
+          <button id="cal-center-capture">Capturar</button>
+          <button id="cal-center-hover" class="secondary">Ir encima</button>
+          <button id="cal-center-touch" class="secondary">Tocar</button>
+          <button id="cal-center-clear" class="secondary">Quitar centro</button>
+        </div>
+      </div>
+      <div class="row fields">
+        <label>Nombre <input type="text" id="cal-name" maxlength="60"></label>
+        <label>Ajuste fino de inclinación (mm) <input type="number" id="cal-skew" step="0.5"></label>
+        <label>Levantado de pluma (mm) <input type="number" id="cal-lift" step="1"></label>
+        <label>Orientación del dibujo
+          <select id="cal-rotation">
+            <option value="0">0° (cabeza hacia las esquinas de arriba)</option>
+            <option value="90">90° antihorario</option>
+            <option value="180">180°</option>
+            <option value="270">270° antihorario</option>
+          </select>
+        </label>
+      </div>
+      <p class="status" id="cal-rotation-info"></p>
+      <div class="row">
+        <button id="cal-save">Guardar cambios</button>
+      </div>
+      <p id="cal-diagnostics" class="status"></p>
+      <p id="cal-diag-warning" class="warning"></p>
+    </section>
+
+    <section class="stage">
+      <h2>Probar calibración</h2>
+      <p class="status">Usa el perfil activo. El contorno recorre el borde del área (2 mm hacia adentro). <span id="cal-pattern-desc"></span></p>
+      <p class="warning" id="cal-test-inactive"></p>
+      <div class="row">
+        <button id="cal-test-outline">Dibujar contorno</button>
+        <button id="cal-test-pattern">Dibujar patrón de prueba</button>
+        <button id="cal-test-precision" class="secondary">Prueba de precisión</button>
+      </div>
+      <p class="status">La prueba de precisión mide, en 9 puntos de la hoja, a cuántos mm del punto pedido queda realmente el brazo: con la pluma en el aire, apoyada, y después de movimientos cortos de 5 mm. Sirve para saber si los rasgos chicos (ojos, boca) se deforman por la fricción del esfero, por el juego de los servos o por un corrimiento fijo. Deja unas crucecitas en el papel (~2 min).</p>
+      <progress id="cal-test-progress" value="0" max="100" class="hidden"></progress>
+      <p id="cal-test-message" class="status"></p>
+    </section>
+
+    <p id="cal-error" class="error" role="alert"></p>
+  </main>
+
+  <main id="app">
+
+    <section id="stage-upload" class="stage">
+      <h2>1. Subir foto</h2>
+      <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp">
+      <label for="own-sketch-input">¿Ya tenés un boceto hecho? Subilo acá y te saltás la generación con Gemini (opcional):</label>
+      <input type="file" id="own-sketch-input" accept="image/png,image/jpeg,image/webp">
+      <button id="btn-upload" disabled>Subir y generar boceto</button>
+      <p id="upload-error" class="error"></p>
+    </section>
+
+    <section id="stage-sketch" class="stage hidden">
+      <h2>2. Boceto generado</h2>
+      <div class="side-by-side">
+        <figure><img id="img-original" alt="Original"><figcaption>Original</figcaption></figure>
+        <figure>
+          <div class="crop-wrap" id="crop-wrap">
+            <img id="img-sketch" alt="Boceto" draggable="false">
+            <div class="crop-box hidden" id="crop-box"></div>
+          </div>
+          <figcaption>Boceto · arrastrá sobre la imagen para recortar</figcaption>
+        </figure>
+      </div>
+      <div class="row">
+        <p class="status" id="crop-info"></p>
+        <button id="btn-crop-clear" class="secondary hidden">Quitar recorte</button>
+      </div>
+      <p id="sketch-status" class="status"></p>
+      <p id="sketch-error" class="error"></p>
+      <label for="detail-select">Nivel de detalle:</label>
+      <select id="detail-select">
+        <option value="bajo">Bajo (más seguro, trazos simples)</option>
+        <option value="medio" selected>Medio (recomendado)</option>
+        <option value="alto">Alto (más fiel, más riesgo de fricción)</option>
+      </select>
+      <div class="actions">
+        <button id="btn-sketch-accept">Aceptar boceto</button>
+        <button id="btn-sketch-reject" class="secondary">Rechazar (generar otro)</button>
+      </div>
+      <details>
+        <summary>¿Gemini falló o no te convence? Sube un boceto manual</summary>
+        <input type="file" id="manual-sketch-input" accept="image/png,image/jpeg,image/webp">
+        <button id="btn-manual-sketch">Usar este boceto</button>
+      </details>
+    </section>
+
+    <section id="stage-gcode" class="stage hidden">
+      <h2>3. Trazo para el robot</h2>
+      <img id="img-preview" alt="Preview del trazo">
+      <p id="preview-stats" class="status"></p>
+      <label for="detail-select-2">Nivel de detalle:</label>
+      <select id="detail-select-2">
+        <option value="bajo">Bajo (más seguro, trazos simples)</option>
+        <option value="medio">Medio (recomendado)</option>
+        <option value="alto">Alto (más fiel, más riesgo de fricción)</option>
+      </select>
+      <button id="btn-gcode-rebuild" class="secondary">Actualizar preview con este detalle</button>
+      <p class="warning">Al aceptar, el brazo real empieza a moverse.</p>
+      <div class="actions">
+        <button id="btn-gcode-accept">Aceptar y dibujar</button>
+        <button id="btn-gcode-reject" class="secondary">Rechazar (volver al boceto)</button>
+      </div>
+      <p id="gcode-error" class="error"></p>
+    </section>
+
+    <section id="stage-drawing" class="stage hidden">
+      <h2>4. Dibujando...</h2>
+      <img id="img-drawing" alt="Trazo que se esta dibujando">
+      <progress id="draw-progress" value="0" max="100"></progress>
+      <p id="draw-message" class="status"></p>
+    </section>
+
+    <section id="stage-done" class="stage hidden">
+      <h2 id="done-title">Listo</h2>
+      <p id="done-message" class="status"></p>
+      <div class="actions">
+        <button id="btn-redraw">Volver a dibujar el mismo</button>
+        <button id="btn-restart" class="secondary">Empezar de nuevo</button>
+      </div>
+      <p id="done-error" class="error"></p>
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+  <script src="calibration.js"></script>
+</body>
+</html>

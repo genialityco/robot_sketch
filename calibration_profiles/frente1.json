@@ -1,0 +1,50 @@
+{
+  "name": "frente1",
+  "corners": {
+    "top_left": [
+      262.3,
+      44.2,
+      79.9,
+      -179.72,
+      -0.22,
+      62.57
+    ],
+    "top_right": [
+      260.0,
+      -54.9,
+      79.5,
+      -179.35,
+      -0.18,
+      41.04
+    ],
+    "bottom_right": [
+      144.3,
+      -51.5,
+      80.3,
+      178.11,
+      2.2,
+      69.2
+    ],
+    "bottom_left": [
+      152.5,
+      51.3,
+      79.4,
+      179.1,
+      0.25,
+      99.13
+    ]
+  },
+  "z_adjust_mm": {
+    "top_left": -4.0,
+    "top_right": -4.0,
+    "bottom_right": 0.0,
+    "bottom_left": 0.0
+  },
+  "center_z": null,
+  "center_z_adjust_mm": -4.0,
+  "manual_skew_mm": 5.0,
+  "pen_lift_mm": 10.0,
+  "drawing_rotation": 0,
+  "id": "frente1",
+  "updated_at": "2026-09-25 15:02"
+}

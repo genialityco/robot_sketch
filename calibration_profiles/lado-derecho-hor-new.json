@@ -1,0 +1,50 @@
+{
+  "name": "lado_derecho_hor_new",
+  "corners": {
+    "top_left": [
+      75.8,
+      -253.6,
+      77.2,
+      -179.3,
+      0.57,
+      20.3
+    ],
+    "top_right": [
+      -69.0,
+      -255.7,
+      77.8,
+      -178.47,
+      6.83,
+      -7.15
+    ],
+    "bottom_right": [
+      -76.7,
+      -159.3,
+      78.8,
+      -178.35,
+      4.0,
+      -5.15
+    ],
+    "bottom_left": [
+      76.7,
+      -150.7,
+      81.4,
+      177.2,
+      3.47,
+      21.59
+    ]
+  },
+  "z_adjust_mm": {
+    "top_left": -2.0,
+    "top_right": -2.0,
+    "bottom_right": -2.0,
+    "bottom_left": -2.0
+  },
+  "center_z": 79.9,
+  "center_z_adjust_mm": -2.0,
+  "manual_skew_mm": 1.0,
+  "pen_lift_mm": 15.0,
+  "drawing_rotation": 90,
+  "id": "lado-derecho-hor-new",
+  "updated_at": "2026-09-25 09:20"
+}
