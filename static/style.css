@@ -146,4 +146,6 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .center-card { margin-top: 12px; }
 .center-card > .status { margin: 0 0 4px; font-size: 13px; }
 .fields label { flex: 1 1 180px; }
+.fields label.check { display: flex; align-items: center; gap: 6px; align-self: end; padding-bottom: 6px; }
+.fields label.check input { width: auto; }
 #cal-view progress { margin-top: 8px; }

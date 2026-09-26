@@ -20,7 +20,7 @@ BAUD = 115200
 # puntos (ver connect()).
 LAST_FRESH_MODE = None
 
-DRAW_SPEED = 80       # velocidad con la pluma tocando el papel (dibujando)
+DRAW_SPEED = 40       # velocidad con la pluma tocando el papel (dibujando); era 80
 TRAVEL_SPEED = 100       # velocidad con la pluma levantada (desplazamientos)
 PEN_LIFT_MM = 35.0       # cuanto se levanta la pluma (mm). Subido de 15.6: el modelo de
                          # altura de contacto solo tiene 4 puntos medidos, y el error del
@@ -133,16 +133,24 @@ def _regularized_corners():
 # pluma 2 mm se notaba en el contorno pero no en la cara, que esta en el
 # medio. Solo corrige la altura: no cambia la forma ni el tamano del area.
 CENTER_Z = None
+# Lo mismo en x,y: donde quedo la punta al capturar el centro REAL de la hoja
+# (marcado a mano). Las esquinas se capturan leyendo get_coords, que tiene
+# errores de algunos mm (ver la prueba de precision), y el centro calculado con
+# ellas puede no caer en el centro de la hoja: el dibujo sale corrido. Se
+# corrige con la misma loma que la Z (todo en el centro, nada en el borde).
+# None = sin corregir.
+CENTER_XY = None
 
 
 def _recompute_regularized():
-    global _REG_TOP_LEFT, _REG_TOP_RIGHT, _REG_BOTTOM_RIGHT, _REG_BOTTOM_LEFT, _PLANE_CENTER_Z
+    global _REG_TOP_LEFT, _REG_TOP_RIGHT, _REG_BOTTOM_RIGHT, _REG_BOTTOM_LEFT, _PLANE_CENTER_Z, _PLANE_CENTER_XY
     reg = _regularized_corners()
     _REG_TOP_LEFT = reg['TOP_LEFT']
     _REG_TOP_RIGHT = reg['TOP_RIGHT']
     _REG_BOTTOM_RIGHT = reg['BOTTOM_RIGHT']
     _REG_BOTTOM_LEFT = reg['BOTTOM_LEFT']
     _PLANE_CENTER_Z = sum(c[2] for c in reg.values()) / 4
+    _PLANE_CENTER_XY = (sum(c[0] for c in reg.values()) / 4, sum(c[1] for c in reg.values()) / 4)
 
 
 _recompute_regularized()
@@ -158,13 +166,23 @@ def _center_z_correction(u, v):
     return (CENTER_Z - _PLANE_CENTER_Z) * 16 * u * (1 - u) * v * (1 - v)
 
 
+def _center_xy_correction(u, v):
+    """(dx, dy) para que el centro de la hoja caiga en CENTER_XY, con la misma
+    loma que _center_z_correction (esquinas y contorno quedan igual)."""
+    if CENTER_XY is None:
+        return 0.0, 0.0
+    bump = 16 * u * (1 - u) * v * (1 - v)
+    return (CENTER_XY[0] - _PLANE_CENTER_XY[0]) * bump, (CENTER_XY[1] - _PLANE_CENTER_XY[1]) * bump
+
+
 def set_calibration(top_left, top_right, bottom_right, bottom_left,
-                    manual_skew_mm=None, pen_lift_mm=None, center_z=None, j1_backlash_deg=None):
+                    manual_skew_mm=None, pen_lift_mm=None, center_z=None, j1_backlash_deg=None,
+                    center_xy=None):
     """Reemplaza en caliente las 4 esquinas medidas (y opcionalmente el ajuste
     fino, el levantado de pluma y el juego de la base), sin editar este
     archivo. Lo usa la app web para aplicar perfiles de calibracion. center_z
     (ver CENTER_Z) se aplica siempre: None = sin punto de centro."""
-    global TOP_LEFT, TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT, MANUAL_SKEW_MM, PEN_LIFT_MM, CENTER_Z
+    global TOP_LEFT, TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT, MANUAL_SKEW_MM, PEN_LIFT_MM, CENTER_Z, CENTER_XY
     global J1_BACKLASH_DEG
     TOP_LEFT, TOP_RIGHT = list(top_left), list(top_right)
     BOTTOM_RIGHT, BOTTOM_LEFT = list(bottom_right), list(bottom_left)
@@ -175,13 +193,14 @@ def set_calibration(top_left, top_right, bottom_right, bottom_left,
     if j1_backlash_deg is not None:
         J1_BACKLASH_DEG = j1_backlash_deg
     CENTER_Z = center_z
+    CENTER_XY = tuple(center_xy) if center_xy is not None else None
     _recompute_regularized()
 
 
 def get_calibration():
     return dict(top_left=list(TOP_LEFT), top_right=list(TOP_RIGHT),
                 bottom_right=list(BOTTOM_RIGHT), bottom_left=list(BOTTOM_LEFT),
-                manual_skew_mm=MANUAL_SKEW_MM, pen_lift_mm=PEN_LIFT_MM, center_z=CENTER_Z,
+                manual_skew_mm=MANUAL_SKEW_MM, pen_lift_mm=PEN_LIFT_MM, center_z=CENTER_Z, center_xy=CENTER_XY,
                 j1_backlash_deg=J1_BACKLASH_DEG)
 
 
@@ -342,6 +361,9 @@ def bilinear(u, v):
     if MANUAL_SKEW_MM:
         coords[0] += (u - 0.5) * MANUAL_SKEW_MM
     coords[2] += _center_z_correction(u, v)
+    dx, dy = _center_xy_correction(u, v)
+    coords[0] += dx
+    coords[1] += dy
 
     if FIXED_ORIENTATION:
         coords.extend(_average_orientation())
@@ -593,7 +615,10 @@ SETTLE_PAUSE_S = 0.1       # margen extra tras asentarse (el esfero termina de a
 # firmware actualizado y sin errores del robot: lentes redondos que salian
 # aplanados y con esquinas, aunque lo enviado coincidia con el preview). Con
 # esto la cola nunca pasa de SYNC_EVERY comandos. 0 = desactivado.
-SYNC_EVERY = 4
+# Subido de 4 a 12 (2026-09-26): cada espera frena el brazo con la pluma
+# apoyada, y el arranque siguiente dejaba un "diente" en el trazo cada 4
+# puntos. Si las curvas vuelven a salir rectas, es que la cola se lleno: bajarlo.
+SYNC_EVERY = 12
 SYNC_STILL_S = 1.0
 
 
@@ -992,6 +1017,48 @@ def test_pattern_moves():
     return moves
 
 
+def fit_design(strokes, rotation_deg, margin_mm, max_scale=1.0):
+    """
+    Trazos de un diseno de prueba (y hacia arriba = hacia las esquinas
+    "arriba" del perfil) -> moves en mm del area calibrada (usar con
+    area_bounds()): girado como pipeline.rotate_moves (antihorario, multiplo
+    de 90, asi sale orientado como saldria un retrato con ese perfil),
+    centrado, y escalado para entrar con margin_mm de margen, sin pasar de
+    max_scale. Devuelve (moves, escala usada).
+    """
+    turns = (int(rotation_deg) // 90) % 4
+    rot = {0: lambda x, y: (x, y), 1: lambda x, y: (-y, x),
+           2: lambda x, y: (-x, -y), 3: lambda x, y: (y, -x)}[turns]
+    strokes = [[rot(x, y) for x, y in st] for st in strokes]
+    xs = [x for st in strokes for x, _ in st]
+    ys = [y for st in strokes for _, y in st]
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    design_w, design_h = (max(xs) - min(xs)) or 1.0, (max(ys) - min(ys)) or 1.0
+    _, w, _, h = area_bounds()
+    s = min((w - 2 * margin_mm) / design_w, (h - 2 * margin_mm) / design_h, max_scale)
+    moves = []
+    for points in strokes:
+        moves += _stroke([(w / 2 + (x - cx) * s, h / 2 + (y - cy) * s) for x, y in points])
+    return moves, s
+
+
+EYES_TEST_MARGIN_MM = 3.0
+EYES_TEST_MIN_SCALE = 0.6   # mas chico que esto ya no dice como sale un ojo de retrato
+
+
+def test_eyes_moves(rotation_deg=0):
+    """Todos los estilos de ojo (ver eye_styles.test_design), numerados, al
+    tamano de un ojo de retrato si el area lo permite. Lanza ValueError si
+    el area es demasiado chica."""
+    import eye_styles
+    strokes, _w, _h = eye_styles.test_design()
+    moves, s = fit_design(strokes, rotation_deg, EYES_TEST_MARGIN_MM)
+    if s < EYES_TEST_MIN_SCALE:
+        _, w, _, h = area_bounds()
+        raise ValueError(f'el area calibrada ({w:.0f}x{h:.0f} mm) es demasiado chica para la prueba de ojos.')
+    return moves
+
+
 FACE_MAX_HEIGHT_MM = 100        # alto de la cara (frente a menton) si el area lo permite
 FACE_MIN_HEIGHT_MM = 40
 FACE_MARGIN_MM = 5.0
@@ -1036,21 +1103,11 @@ def test_face_moves(rotation_deg=0):
         [(0, 4), (-5, -9), (5, -9), (0, 4)],                             # nariz
         *almond(0, -22, 17, 4, 6, middle=True),                          # boca
     ]
-    turns = (int(rotation_deg) // 90) % 4
-    rot = {0: lambda x, y: (x, y), 1: lambda x, y: (-y, x),
-           2: lambda x, y: (-x, -y), 3: lambda x, y: (y, -x)}[turns]
-    strokes = [[rot(x, y) for x, y in s] for s in strokes]
-    design_w, design_h = (100, 76) if turns % 2 else (76, 100)
-
-    _, w, _, h = area_bounds()
-    s = min((w - 2 * FACE_MARGIN_MM) / design_w, (h - 2 * FACE_MARGIN_MM) / design_h,
-            FACE_MAX_HEIGHT_MM / 100)
+    moves, s = fit_design(strokes, rotation_deg, FACE_MARGIN_MM, FACE_MAX_HEIGHT_MM / 100)
     if 100 * s < FACE_MIN_HEIGHT_MM:
+        _, w, _, h = area_bounds()
         raise ValueError(f'el area calibrada ({w:.0f}x{h:.0f} mm) es demasiado chica para el rostro '
                          f'(minimo {FACE_MIN_HEIGHT_MM} mm de alto).')
-    moves = []
-    for points in strokes:
-        moves += _stroke([(w / 2 + x * s, h / 2 + y * s) for x, y in points])
     return moves
 
 

@@ -19,10 +19,30 @@ GEMINI_SKETCH_PROMPT = (
     "de la imagen de esta persona crea un boceto de su rostro con pocos trazos, y con trazos definidos trazos negros y fondo blanco, sin relleno, lineas con la misma intensidad, ojos, nariz, y boca bien definidos que el rostro este centrado, sin accesorios como gafas"
 )
 
+# Estilo "trazo simple": retrato de linea continua (tipo "one line art"), con
+# pocas lineas largas y fluidas y rasgos minimos. Es mucho mas facil de
+# dibujar para el brazo: menos bajadas de pluma, menos trazos cortos, curvas
+# suaves. Se convierte a gcode pasando por SVG (ver lib/sketch_svg.py).
+GEMINI_LINE_ART_PROMPT = (
+    "convierte la foto de esta persona en un retrato de arte lineal minimalista, estilo dibujo de una sola "
+    "linea continua: pocas lineas largas, fluidas y suaves, negras, finas y todas del mismo grosor, sobre fondo "
+    "blanco. dibuja solo el contorno de la cara, la silueta del cabello con pocas lineas largas, el cuello y la "
+    "linea de los hombros. ojos, cejas, nariz y boca con un trazo minimo y simple cada uno. sin sombras, sin "
+    "relleno, sin texturas, sin sombreado ni rayado, sin trazos cortos, repetidos ni superpuestos, sin "
+    "garabatos. el rostro centrado y de frente, sin accesorios como gafas"
+)
 
-def generate_sketch(image_path, out_path):
+# estilo -> (nombre para la interfaz, prompt)
+STYLES = {
+    'detallado': ('Detallado (boceto normal)', GEMINI_SKETCH_PROMPT),
+    'trazo': ('Trazo simple (lineas largas, mas facil de dibujar)', GEMINI_LINE_ART_PROMPT),
+}
+DEFAULT_STYLE = 'detallado'
+
+
+def generate_sketch(image_path, out_path, style=DEFAULT_STYLE):
     """
-    Manda la imagen a Gemini con GEMINI_SKETCH_PROMPT y guarda la primera
+    Manda la imagen a Gemini con el prompt del estilo (ver STYLES) y guarda la primera
     imagen que devuelva en out_path. Lanza RuntimeError con un mensaje claro
     si falta la API key o si Gemini no devuelve ninguna imagen (p.ej. por
     cuota agotada, ver advertencia arriba).
@@ -42,7 +62,7 @@ def generate_sketch(image_path, out_path):
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model=GEMINI_IMAGE_MODEL,
-        contents=[GEMINI_SKETCH_PROMPT, types.Part.from_bytes(data=image_bytes, mime_type=mime)],
+        contents=[STYLES.get(style, STYLES[DEFAULT_STYLE])[1], types.Part.from_bytes(data=image_bytes, mime_type=mime)],
     )
 
     candidate = (response.candidates or [None])[0]

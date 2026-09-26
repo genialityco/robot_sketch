@@ -2,40 +2,55 @@
   "name": "Calibracion original",
   "corners": {
     "top_left": [
-      266.9,
-      62.8,
-      81.9,
-      -179.11,
-      0.8,
-      57.13
+      271.9,
+      57.2,
+      80.0,
+      177.7,
+      -3.44,
+      61.15
     ],
     "top_right": [
-      255.3,
-      -51.8,
-      86.5,
-      176.03,
-      -1.1,
-      37.75
+      280.3,
+      -51.3,
+      80.3,
+      177.95,
+      -0.1,
+      42.96
     ],
     "bottom_right": [
-      155.6,
-      -46.9,
-      84.5,
-      178.78,
-      4.5,
-      37.92
+      165.2,
+      -59.8,
+      79.9,
+      177.9,
+      -0.42,
+      70.4
     ],
     "bottom_left": [
-      164.5,
-      58.6,
-      85.6,
-      -179.33,
-      -3.25,
-      81.15
+      164.7,
+      59.0,
+      79.7,
+      179.64,
+      -1.64,
+      99.94
     ]
   },
-  "manual_skew_mm": 5.0,
-  "pen_lift_mm": 35.0,
+  "z_adjust_mm": {
+    "top_left": -4.0,
+    "top_right": -5.0,
+    "bottom_right": -1.0,
+    "bottom_left": -1.0
+  },
+  "center_z": 78.4,
+  "center_z_adjust_mm": -3.0,
+  "center_xy": [
+    216.3,
+    16.3
+  ],
+  "manual_skew_mm": 2.0,
+  "pen_lift_mm": 25.0,
+  "drawing_rotation": 0,
+  "j1_backlash_deg": 1.5,
+  "j1_unidirectional": false,
   "id": "calibracion-original",
-  "updated_at": "2026-09-25 07:23"
+  "updated_at": "2026-09-26 12:56"
 }

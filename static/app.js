@@ -47,6 +47,7 @@
       case 'uploaded':
       case 'sketching':
         showStage('sketch');
+        el('style-select-2').value = job.style || 'detallado';
         el('img-original').src = job.original_url || '';
         el('img-sketch').src = job.sketch_url || '';
         crop = null;
@@ -61,6 +62,7 @@
 
       case 'sketch_ready':
         showStage('sketch');
+        el('style-select-2').value = job.style || 'detallado';
         el('img-original').src = job.original_url || '';
         el('img-sketch').src = job.sketch_url || '';
         if (cropSyncedFor !== job.sketch_url) {
@@ -78,6 +80,7 @@
 
       case 'sketch_failed':
         showStage('sketch');
+        el('style-select-2').value = job.style || 'detallado';
         el('img-original').src = job.original_url || '';
         el('sketch-status').textContent = '';
         el('sketch-error').textContent = 'No se pudo generar el boceto: ' + job.sketch_error;
@@ -96,6 +99,8 @@
         // el timestamp evita que el navegador muestre el preview viejo cacheado al regenerar
         el('img-preview').src = job.preview_url || '';  // ya trae ?v= con la version del archivo
         el('preview-stats').textContent = describeStats(job.preview_stats);
+        el('svg-link-row').classList.toggle('hidden', !job.svg_url);
+        if (job.svg_url) el('svg-link').href = job.svg_url;
         el('gcode-error').textContent = '';
         el('detail-select-2').value = job.detail || 'medio';
         el('btn-gcode-rebuild').disabled = false;
@@ -145,10 +150,11 @@
 
   function describeStats(stats) {
     if (!stats) return '';
-    return stats.strokes + ' trazos, ' + stats.points + ' puntos, ' +
+    return (stats.style ? stats.style + ': ' : '') + stats.strokes + ' trazos, ' + stats.points + ' puntos, ' +
       stats.draw_mm + ' mm de dibujo, ' + stats.travel_mm + ' mm de viaje ' +
       '(~' + stats.estimated_minutes + ' min estimado, área ' +
-      stats.area_mm[0] + '×' + stats.area_mm[1] + ' mm)';
+      stats.area_mm[0] + '×' + stats.area_mm[1] + ' mm)' + (stats.eyes ? '. ' + stats.eyes[0].toUpperCase() +
+        stats.eyes.slice(1) + '.' : '');
   }
 
   function renderDrawProgress(job) {
@@ -172,6 +178,7 @@
     try {
       const form = new FormData();
       form.append('image', file);
+      form.append('style', el('style-select').value);
       const job = await api('/api/jobs', { method: 'POST', body: form });
       jobId = job.id;
       let updated;
@@ -263,6 +270,7 @@
     try {
       const form = new FormData();
       form.append('detail', el('detail-select').value);
+      form.append('style', el('style-select-2').value);
       form.append('crop', crop ? JSON.stringify(crop) : '');
       const job = await api('/api/jobs/' + jobId + '/sketch/accept', { method: 'POST', body: form });
       render(job);
@@ -274,7 +282,9 @@
 
   el('btn-sketch-reject').addEventListener('click', async () => {
     try {
-      const job = await api('/api/jobs/' + jobId + '/sketch/reject', { method: 'POST' });
+      const form = new FormData();
+      form.append('style', el('style-select-2').value);
+      const job = await api('/api/jobs/' + jobId + '/sketch/reject', { method: 'POST', body: form });
       render(job);
       startPolling();
     } catch (err) {

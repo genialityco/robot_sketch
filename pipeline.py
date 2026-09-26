@@ -12,6 +12,7 @@
 # se quiere usar otra copia (ej. la de su proyecto original), DRAW_PERSON_DIR
 # y GCODE_LIB_DIR apuntan a la carpeta de cada uno.
 
+import math
 import os
 import sys
 import time
@@ -29,6 +30,8 @@ for _p in (DRAW_PERSON_DIR, os.path.abspath(GCODE_LIB_DIR)):
 
 import draw_person as dp          # noqa: E402  (extraccion de trazos)
 import gcode_draw_lib as lib      # noqa: E402  (calibracion/ejecucion real)
+import j1_unidireccional as j1u   # noqa: E402  (base en un solo sentido, ver ese modulo)
+import eye_styles                 # noqa: E402  (estilos de ojo para los retratos)
 
 # Interruptor temporal: con False, simplify_for_robot() devuelve los moves
 # crudos de la extraccion tal cual (sin Douglas-Peucker ni filtrado de trazos
@@ -250,26 +253,29 @@ def _face_landmark_strokes_scaled(original_photo_path, sketch_shape):
     mantuvo el encuadre de la foto, cosa que no siempre pasa -- quien lo usa
     debe validar que coincida (ver _aligned_face_landmarks).
 
-    Devuelve [] sin lanzar excepcion si mediapipe no esta instalado, no
-    detecta cara, no se puede leer la foto, o las proporciones no coinciden
-    -- este refuerzo es opcional, nunca debe romper el pipeline principal.
+    Devuelve (trazos, puntos) -- los 478 landmarks sueltos, ver
+    dp.face_landmark_points --, o ([], None) sin lanzar excepcion si mediapipe
+    no esta instalado, no detecta cara, no se puede leer la foto, o las
+    proporciones no coinciden -- este refuerzo es opcional, nunca debe romper
+    el pipeline principal.
     """
     try:
         orig_img = dp.load_image(original_photo_path)
     except Exception:
-        return []
+        return [], None
     oh, ow = orig_img.shape[:2]
     sh, sw = sketch_shape[:2]
     if not oh or not ow or abs((ow / oh) - (sw / sh)) > FACE_LANDMARK_ASPECT_TOLERANCE:
-        return []
+        return [], None
     try:
-        landmark_strokes = dp.face_landmark_strokes(orig_img)
+        pts = dp.face_landmark_points(orig_img)
+        landmark_strokes = dp.face_landmark_strokes(orig_img, pts)
     except Exception:
-        return []
+        return [], None
     if not landmark_strokes:
-        return []
+        return [], None
     scale_x, scale_y = sw / ow, sh / oh
-    return [s * [scale_x, scale_y] for s in landmark_strokes]
+    return [s * [scale_x, scale_y] for s in landmark_strokes], [(x * scale_x, y * scale_y) for x, y in pts]
 
 
 # Distancia (fraccion del lado mayor del boceto, ~10px en 800) hasta la que
@@ -313,24 +319,26 @@ def _face_landmarks_on_sketch(img):
     import cv2
     try:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (0, 0), max(gray.shape) / 480.0)
-        return dp.face_landmark_strokes(cv2.cvtColor(blurred, cv2.COLOR_GRAY2BGR)) or []
+        blurred = cv2.cvtColor(cv2.GaussianBlur(gray, (0, 0), max(gray.shape) / 480.0), cv2.COLOR_GRAY2BGR)
+        pts = dp.face_landmark_points(blurred)
+        return (dp.face_landmark_strokes(blurred, pts) or []), pts
     except Exception:
-        return []
+        return [], None
 
 
 def _aligned_face_landmarks(img, mask, original_photo_path=None):
     """
     Landmarks de ojos/cejas/nariz/labios en coordenadas del boceto, solo si
-    coinciden con lo que el boceto dibujo; [] si no hay forma confiable.
-    Primero se buscan en el propio boceto; si no, en la foto original
-    escalada al boceto (solo sirve si Gemini mantuvo el encuadre).
+    coinciden con lo que el boceto dibujo; ([], None) si no hay forma
+    confiable. Primero se buscan en el propio boceto; si no, en la foto
+    original escalada al boceto (solo sirve si Gemini mantuvo el encuadre).
+    Devuelve (trazos, puntos sueltos de MediaPipe).
     """
     sources = [('boceto', lambda: _face_landmarks_on_sketch(img))]
     if original_photo_path:
         sources.append(('foto original', lambda: _face_landmark_strokes_scaled(original_photo_path, img.shape)))
     for name, find in sources:
-        landmarks = find()
+        landmarks, points = find()
         if not landmarks:
             continue
         dists, tol = _landmarks_vs_sketch(landmarks, mask)
@@ -339,10 +347,10 @@ def _aligned_face_landmarks(img, mask, original_photo_path=None):
         median = float(np.median(all_d))
         if on_ink >= LANDMARK_MIN_ON_INK and median <= LANDMARK_MAX_MEDIAN_FRACTION * max(img.shape[:2]):
             print('rasgos de la cara ubicados desde el %s (%.0f%% sobre la tinta)' % (name, on_ink * 100), flush=True)
-            return landmarks
+            return landmarks, points
         print('rasgos desde el %s descartados: no coinciden con el boceto (%.0f%% sobre la tinta, '
               'mediana %.0fpx)' % (name, on_ink * 100, median), flush=True)
-    return []
+    return [], None
 
 
 def _landmark_bbox_flipped(landmark_strokes, img_height):
@@ -355,6 +363,204 @@ def _landmark_bbox_flipped(landmark_strokes, img_height):
     ys = np.concatenate([s[:, 1] for s in landmark_strokes])
     ys_flipped = img_height - ys
     return float(xs.min()), float(xs.max()), float(ys_flipped.min()), float(ys_flipped.max())
+
+
+# Indices de MediaPipe Face Landmarker (478 puntos: malla + iris) de cada ojo:
+# lagrimal, esquina de afuera, centro del parpado de arriba y de abajo, centro
+# del iris y su contorno, y el borde de abajo de la ceja (para no borrarla al
+# sacar el ojo del boceto).
+_EYE_LANDMARKS = [
+    dict(inner=133, outer=33, upper=159, lower=145, iris=468, ring=(469, 470, 471, 472),
+         brow=(46, 53, 52, 65, 55)),
+    dict(inner=362, outer=263, upper=386, lower=374, iris=473, ring=(474, 475, 476, 477),
+         brow=(276, 283, 282, 295, 285)),
+]
+_NOSE_TIP = 1
+
+
+def eyes_from_landmarks(points, img_height):
+    """
+    Los dos ojos a partir de los landmarks, en el mismo sistema de ejes que
+    los moves (Y invertido, ver strokes_to_moves): esquinas, parametros de la
+    persona para eye_styles (apertura, mirada, iris), hacia donde queda la
+    frente, y la zona a borrar del boceto. None si faltan puntos.
+    """
+    if not points or len(points) < 468:
+        return None
+
+    def P(i):
+        x, y = points[i]
+        return (float(x), float(img_height - y))
+
+    nose = P(_NOSE_TIP)
+    eyes = []
+    for idx in _EYE_LANDMARKS:
+        inner, outer = P(idx['inner']), P(idx['outer'])
+        width = math.dist(inner, outer)
+        if width <= 1:
+            return None
+        center = ((inner[0] + outer[0]) / 2, (inner[1] + outer[1]) / 2)
+        iris_c = iris_r = None
+        if len(points) >= 478:
+            iris_c = P(idx['iris'])
+            iris_r = sum(math.dist(iris_c, P(i)) for i in idx['ring']) / len(idx['ring'])
+        params = eye_styles.eye_params_from_landmarks(inner, outer, P(idx['upper']), P(idx['lower']),
+                                                      iris_c, iris_r)
+        brow = [P(i) for i in idx['brow']]
+        brow_c = (sum(p[0] for p in brow) / len(brow), sum(p[1] for p in brow) / len(brow))
+        eyes.append(dict(inner=inner, outer=outer, center=center, width=width, params=params,
+                         up_hint=(center[0] - nose[0], center[1] - nose[1]),
+                         brow_dist=math.dist(center, brow_c)))
+    return eyes
+
+
+# Zona que se borra del boceto alrededor de cada ojo antes de dibujar el
+# estilo elegido (elipse alineada con el ojo, en medios anchos del ojo): lo
+# bastante grande para llevarse las pestanas y sombras que Gemini dibuja
+# alrededor, sin llegar a la ceja (nunca pasa de EYE_ERASE_BROW_FRACTION de
+# la distancia hasta la ceja).
+EYE_ERASE_HALF_WIDTH = 1.35
+EYE_ERASE_HALF_HEIGHT = 0.8
+EYE_ERASE_BROW_FRACTION = 0.7
+
+
+def _eye_erase_ellipse(eye):
+    hw = eye['width'] / 2
+    ex = ((eye['outer'][0] - eye['inner'][0]) / eye['width'], (eye['outer'][1] - eye['inner'][1]) / eye['width'])
+    b = min(EYE_ERASE_HALF_HEIGHT * hw, EYE_ERASE_BROW_FRACTION * eye['brow_dist'])
+    return eye['center'], ex, EYE_ERASE_HALF_WIDTH * hw, b
+
+
+def remove_eye_regions(moves, eyes):
+    """Saca de los moves (pixeles, Y invertido) lo que el boceto dibujo dentro
+    de la zona de cada ojo: los trazos que cruzan la zona se cortan ahi."""
+    ellipses = [_eye_erase_ellipse(e) for e in eyes]
+
+    def inside(x, y):
+        for (cx, cy), ex, a, b in ellipses:
+            dx, dy = x - cx, y - cy
+            u = dx * ex[0] + dy * ex[1]
+            v = -dx * ex[1] + dy * ex[0]
+            if (u / a) ** 2 + (v / b) ** 2 <= 1:
+                return True
+        return False
+
+    runs, cur = [], []
+    for x, y, pen_down in moves:
+        if not pen_down:
+            if len(cur) >= 2:
+                runs.append(cur)
+            cur = []
+            continue
+        if inside(x, y):
+            if len(cur) >= 2:
+                runs.append(cur)
+            cur = []
+        else:
+            cur.append((x, y))
+    if len(cur) >= 2:
+        runs.append(cur)
+    return _flat_strokes_to_moves(runs)
+
+
+def eye_style_moves(style, eyes, mm_per_px):
+    """Los dos ojos dibujados con un estilo de eye_styles, ubicados y
+    deformados segun los landmarks de la persona. Cada curva es un trazo
+    aparte (nunca se unen: ver eye_styles)."""
+    strokes = []
+    for eye in eyes:
+        strokes += eye_styles.place_eye(style, eye['inner'], eye['outer'], eye['up_hint'], eye['params'], mm_per_px)
+    return _flat_strokes_to_moves(strokes)
+
+
+def locate_face(sketch_path, threshold=None, original_photo_path=None):
+    """(core_bbox, eyes) del boceto, igual que image_to_raw_moves pero sin
+    extraer trazos (lo usa el estilo "trazo simple", que saca los trazos del SVG)."""
+    img = dp.load_image(sketch_path)
+    mask = dp.sketch_to_mask(img, thresh=threshold)
+    landmarks, points = _aligned_face_landmarks(img, mask, original_photo_path)
+    if not landmarks:
+        return None, None
+    h = img.shape[0]
+    return _landmark_bbox_flipped(landmarks, h), eyes_from_landmarks(points, h)
+
+
+# Estilo "trazo simple" (boceto de lineas largas, ver gemini_sketch.STYLES):
+# niveles de detalle propios, porque no pasa por simplify_for_robot.
+#   smooth_px: suavizado a lo largo de cada linea (pixeles del boceto a ~800)
+#   min_len_mm: lineas mas cortas que esto en el papel no se dibujan
+LINE_ART_LEVELS = {
+    'bajo': dict(smooth_px=3.0, min_len_mm=8.0),
+    'medio': dict(smooth_px=2.0, min_len_mm=5.0),
+    'alto': dict(smooth_px=1.2, min_len_mm=2.5),
+}
+LINE_ART_STEP_MM = 1.5   # paso entre puntos en el papel (ver MIN_SAFE_STEP_MM)
+
+
+def line_art_svg_moves(sketch_path, svg_path, detail=DEFAULT_DETAIL, threshold=None):
+    """
+    Boceto -> SVG (lib/sketch_svg.py: lineas largas empalmadas en los cruces,
+    suavizadas, como curvas Bezier) -> moves finos en pixeles, Y invertido
+    como strokes_to_moves, leyendo el SVG recien escrito. El SVG queda en
+    svg_path para verlo. Los moves todavia no estan en la escala del papel:
+    ver finish_line_art_moves.
+    """
+    import sketch_svg
+    level = LINE_ART_LEVELS.get(detail, LINE_ART_LEVELS[DEFAULT_DETAIL])
+    img = dp.load_image(sketch_path)
+    mask = dp.sketch_to_mask(img, thresh=threshold)
+    h, w = img.shape[:2]
+    paths = [sketch_svg.smooth_path(p, level['smooth_px'], 0.6) for p in sketch_svg.skeleton_paths(mask)]
+    sketch_svg.write_svg([p for p in paths if len(p) >= 2], w, h, svg_path)
+    polylines, (_sw, sh) = sketch_svg.svg_to_polylines(svg_path, step_px=1.0)
+    if not polylines:
+        raise RuntimeError('No se encontraron lineas en el boceto (revisa que tenga suficiente contraste).')
+    return _flat_strokes_to_moves([[(x, sh - y) for x, y in p] for p in polylines])
+
+
+def finish_line_art_moves(moves, detail=DEFAULT_DETAIL, rotation_deg=0):
+    """Moves finos del SVG (pixeles) -> los que se dibujan: sin las lineas mas
+    cortas que min_len_mm en el papel, con un punto cada LINE_ART_STEP_MM, y
+    ordenadas para viajar poco con la pluma arriba."""
+    import sketch_svg
+    level = LINE_ART_LEVELS.get(detail, LINE_ART_LEVELS[DEFAULT_DETAIL])
+    scale = _px_to_mm_scale(moves, rotation_deg)   # mm por pixel
+    strokes, cur = [], []
+    for x, y, pen_down in moves:
+        if not pen_down:
+            if len(cur) >= 2:
+                strokes.append(np.array(cur))
+            cur = []
+        else:
+            cur.append((x, y))
+    if len(cur) >= 2:
+        strokes.append(np.array(cur))
+    strokes = [sketch_svg.resample(s, LINE_ART_STEP_MM / scale) for s in strokes
+               if sketch_svg._length(s) * scale >= level['min_len_mm']]
+    return _flat_strokes_to_moves(dp.order_strokes(_split_small_loops(strokes, scale)))
+
+
+# Figuras cerradas chicas (un ojo, una fosa nasal) se parten en dos
+# medialunas: al cerrar un lazo de un solo trazo, la pluma da la vuelta
+# apoyada y la friccion la arrastra, y queda una raya en vez de la punta.
+SMALL_LOOP_MAX_MM = 45.0
+LOOP_CLOSE_MM = 1.0
+
+
+def _split_small_loops(strokes, mm_per_px):
+    import sketch_svg
+    out = []
+    for s in strokes:
+        closed = len(s) >= 6 and math.dist(s[0], s[-1]) * mm_per_px <= LOOP_CLOSE_MM
+        if not closed or sketch_svg._length(s) * mm_per_px > SMALL_LOOP_MAX_MM:
+            out.append(s)
+            continue
+        loop = s[:-1]
+        start = int(np.argmin(loop[:, 0]))              # arrancar en una punta
+        loop = np.vstack([loop[start:], loop[:start], loop[start:start + 1]])
+        far = int(np.argmax(np.hypot(*(loop - loop[0]).T)))   # la punta opuesta
+        out += [loop[:far + 1], loop[far:]]
+    return out
 
 
 def image_to_raw_moves(sketch_path, invert=False, threshold=None, min_len_px=SKETCH_MIN_LEN_PX,
@@ -374,24 +580,26 @@ def image_to_raw_moves(sketch_path, invert=False, threshold=None, min_len_px=SKE
     linea recta del puente de la nariz -- una raya que ningun boceto dibuja.
     Ver _aligned_face_landmarks para de donde salen y como se valida.
 
-    Devuelve (moves, shape, core_bbox). core_bbox es la posicion REAL de
-    ojos/nariz/boca (ver _landmark_bbox_flipped), o None si no se pudo
+    Devuelve (moves, shape, core_bbox, eyes). core_bbox es la posicion REAL
+    de ojos/nariz/boca (ver _landmark_bbox_flipped), o None si no se pudo
     ubicar la cara -- en ese caso simplify_for_robot cae de vuelta a su
-    heuristica de posicion.
+    heuristica de posicion. eyes: los dos ojos (ver eyes_from_landmarks), o
+    None.
     """
     img = dp.load_image(sketch_path)
     mask = dp.sketch_to_mask(img, invert=invert, thresh=threshold)
     strokes = _extract_strokes(mask, min_len_px, SKETCH_SIMPLIFY_PX)
     img_height, img_width = img.shape[:2]
 
-    landmarks = _aligned_face_landmarks(img, mask, original_photo_path)
+    landmarks, points = _aligned_face_landmarks(img, mask, original_photo_path)
     core_bbox = _landmark_bbox_flipped(landmarks, img_height) if landmarks else None
+    eyes = eyes_from_landmarks(points, img_height) if landmarks else None
 
     strokes = dp.order_strokes(strokes)
     if not strokes:
         raise RuntimeError('No se encontraron trazos en el boceto (prueba invert=True '
                             'si tiene fondo oscuro, o revisa que tenga suficiente contraste).')
-    return strokes_to_moves(strokes, img_height), img.shape[:2], core_bbox
+    return strokes_to_moves(strokes, img_height), img.shape[:2], core_bbox, eyes
 
 
 def rotate_moves(moves, degrees):
@@ -714,8 +922,12 @@ def render_preview(moves, out_path, preserve_aspect=True):
     prev_xyz = prev_sheet = None
     prev_pen_down = None
 
-    robot_pts = lib.iter_target_coords(moves, preserve_aspect=preserve_aspect)
-    sheet_pts = lib.iter_sheet_uv(moves, preserve_aspect=preserve_aspect)
+    # mismo plan que draw(): el preview muestra los tramos cortados y las entradas por el aire
+    bounds = None
+    if j1u.ENABLED:
+        moves, bounds = j1u.plan(moves, preserve_aspect)
+    robot_pts = lib.iter_target_coords(moves, preserve_aspect=preserve_aspect, bounds=bounds)
+    sheet_pts = lib.iter_sheet_uv(moves, preserve_aspect=preserve_aspect, bounds=bounds)
     for (_i, _t, _x, _y, pen_down, coords), (_i2, _t2, _x2, _y2, _pd, u, v) in zip(robot_pts, sheet_pts):
         xyz = tuple(coords[:3])
         sheet = (u * quad_w, v * quad_h)
@@ -763,9 +975,12 @@ def render_preview(moves, out_path, preserve_aspect=True):
 # ---------------------------------------------------------------------------
 # 3. Dibujar de verdad
 # ---------------------------------------------------------------------------
-def draw(mc, moves, progress_cb=None, preserve_aspect=True, bounds=None, check_every=25):
+def draw(mc, moves, progress_cb=None, preserve_aspect=True, bounds=None, check_every=25, unidirectional=None):
     """Dibuja en el robot. Devuelve {'robot_errors': [(punto, codigo, texto)]}
-    (ver lib.draw_moves)."""
+    (ver lib.draw_moves). unidirectional: dibujar con la base girando en un
+    solo sentido (ver j1_unidireccional); None = lo que diga el perfil activo."""
+    if j1u.ENABLED if unidirectional is None else unidirectional:
+        moves, bounds = j1u.plan(moves, preserve_aspect, bounds)
     # Si la calibracion dejo los servos liberados, se traban antes de moverse.
     mc.focus_all_servos()
     time.sleep(0.5)

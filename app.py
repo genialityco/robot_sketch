@@ -98,6 +98,8 @@ def _public(job):
         crop=job.get('crop'),
         sketch_error=job.get('sketch_error'),
         preview_url=url('preview_path'),
+        svg_url=url('svg_path'),
+        style=job.get('style', gemini_sketch.DEFAULT_STYLE),
         preview_stats=job.get('preview_stats'),
         draw_progress=job.get('draw_progress'),
         draw_error=job.get('draw_error'),
@@ -112,6 +114,16 @@ def _public(job):
 # ---------------------------------------------------------------------------
 # Etapa 1: subir foto + generar boceto con Gemini
 # ---------------------------------------------------------------------------
+def _style_from(value):
+    return value if value in gemini_sketch.STYLES else gemini_sketch.DEFAULT_STYLE
+
+
+@app.route('/api/styles', methods=['GET'])
+def list_styles():
+    return jsonify(styles=[dict(id=k, name=v[0]) for k, v in gemini_sketch.STYLES.items()],
+                   default=gemini_sketch.DEFAULT_STYLE)
+
+
 @app.route('/api/jobs', methods=['POST'])
 def create_job():
     file = request.files.get('image')
@@ -125,6 +137,7 @@ def create_job():
     path = os.path.join(_job_dir(job['id']), 'original' + ext)
     file.save(path)
     job['original_path'] = path
+    job['style'] = _style_from(request.form.get('style'))
     job['stage'] = 'uploaded'
     return jsonify(_public(job))
 
@@ -135,7 +148,7 @@ def _run_sketch(job_id):
     job['sketch_error'] = None
     try:
         out_path = os.path.join(_job_dir(job_id), 'sketch.png')
-        gemini_sketch.generate_sketch(job['original_path'], out_path)
+        gemini_sketch.generate_sketch(job['original_path'], out_path, job.get('style', gemini_sketch.DEFAULT_STYLE))
         job['sketch_path'] = out_path
         job['crop'] = None  # boceto nuevo: el recorte anterior ya no aplica
         job['stage'] = 'sketch_ready'
@@ -180,10 +193,13 @@ def upload_manual_sketch(job_id):
 # ---------------------------------------------------------------------------
 @app.route('/api/jobs/<job_id>/sketch/reject', methods=['POST'])
 def reject_sketch(job_id):
-    """Rechazar el boceto: se vuelve a pedir a Gemini (mismo prompt)."""
+    """Rechazar el boceto: se vuelve a pedir a Gemini, con el estilo que
+    venga en el form (o el mismo de antes)."""
     job = _get_job(job_id)
     if job['stage'] != 'sketch_ready':
         return jsonify(error='etapa invalida: %s' % job['stage']), 409
+    if request.form.get('style'):
+        job['style'] = _style_from(request.form.get('style'))
     threading.Thread(target=_run_sketch, args=(job_id,), daemon=True).start()
     job['stage'] = 'sketching'
     return jsonify(_public(job))
@@ -254,15 +270,39 @@ def _build_gcode(job, detail):
     # la foto original solo sirve para ubicar la cara si el boceto no se recorto
     # (los rasgos de la foto se escalan al boceto completo)
     photo = None if job.get('crop') else job.get('original_path')
-    raw_moves, _shape, core_bbox = pl.image_to_raw_moves(source, threshold=threshold, min_len_px=min_len_px,
-                                                          original_photo_path=photo)
+    line_art = job.get('style') == 'trazo'
+    if line_art:
+        # estilo "trazo simple": boceto -> SVG de lineas largas -> moves (ver lib/sketch_svg.py)
+        svg_path = os.path.join(_job_dir(job['id']), 'sketch.svg')
+        raw_moves = pl.line_art_svg_moves(source, svg_path, detail)
+        job['svg_path'] = svg_path
+        core_bbox, eyes = pl.locate_face(source, original_photo_path=photo)
+    else:
+        job['svg_path'] = None
+        raw_moves, _shape, core_bbox, eyes = pl.image_to_raw_moves(source, threshold=threshold, min_len_px=min_len_px,
+                                                                    original_photo_path=photo)
     job['raw_moves'] = raw_moves
+    # estilo de ojos elegido en la calibracion (ver eye_styles): se borran los
+    # ojos del boceto y se dibuja la plantilla, ajustada a los de la persona
+    eye_style = _drawing_settings().get('eye_style')
+    use_eye_style = bool(eye_style and eyes)
+    if use_eye_style:
+        raw_moves = pl.remove_eye_regions(raw_moves, eyes)
     # orientacion segun el perfil activo (hoja de frente o al costado del robot)
     rotation = cal.active_rotation_deg()
-    moves = pl.simplify_for_robot(raw_moves, core_bbox=core_bbox, rotation_deg=rotation, **params)
+    if line_art:
+        moves = pl.finish_line_art_moves(raw_moves, detail, rotation)
+    else:
+        moves = pl.simplify_for_robot(raw_moves, core_bbox=core_bbox, rotation_deg=rotation, **params)
     if not moves:
         raise RuntimeError('No quedaron trazos utilizables con este nivel de detalle '
                             '(probá un nivel mas alto).')
+    if use_eye_style:
+        moves += pl.eye_style_moves(eye_style, eyes, pl._px_to_mm_scale(moves, rotation))
+    job['eyes_note'] = (('ojos: estilo %d, %s' % (pl.eye_styles.STYLE_IDS.index(eye_style) + 1,
+                                                   dict(pl.eye_styles.STYLES)[eye_style]))
+                        if use_eye_style else
+                        'ojos: no se ubicaron en el boceto, quedan los del boceto' if eye_style else None)
     job['rotation'] = rotation
     moves = pl.rotate_moves(moves, rotation)
     job['moves'] = moves
@@ -273,6 +313,8 @@ def _build_gcode(job, detail):
 
     preview_path = os.path.join(_job_dir(job['id']), 'preview.png')
     stats = pl.render_preview(moves, preview_path)
+    stats['eyes'] = job['eyes_note']
+    stats['style'] = gemini_sketch.STYLES.get(job.get('style'), gemini_sketch.STYLES[gemini_sketch.DEFAULT_STYLE])[0]
     job['preview_path'] = preview_path
     job['preview_stats'] = stats
 
@@ -289,6 +331,8 @@ def accept_sketch(job_id):
     if not detail and request.is_json:
         detail = (request.get_json(silent=True) or {}).get('detail')
     detail = detail or pl.DEFAULT_DETAIL
+    if request.form.get('style'):   # como convertir a gcode (un boceto normal tambien se puede pasar por SVG)
+        job['style'] = _style_from(request.form.get('style'))
     try:
         job['crop'] = _parse_crop(request.form.get('crop'))
     except ValueError as exc:
@@ -430,7 +474,37 @@ def _start_draw(job):
 CAL_TASK = dict(kind=None, running=False, progress=None, message=None, error=None, robot_errors=[],
                 sync=None, log=None, precision=None)
 TEST_KINDS = {'outline': 'prueba del contorno del area', 'pattern': 'prueba del patron',
-              'precision': 'prueba de precision', 'face': 'prueba del rostro'}
+              'precision': 'prueba de precision', 'face': 'prueba del rostro', 'eyes': 'prueba de ojos'}
+
+
+# Preferencias de dibujo que no dependen de la hoja (a diferencia de los
+# perfiles de calibracion): por ahora, el estilo de ojos de los retratos.
+DRAWING_SETTINGS_PATH = os.path.join(HERE, 'drawing_settings.json')
+
+
+def _drawing_settings():
+    try:
+        with open(DRAWING_SETTINGS_PATH, encoding='utf-8') as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, ValueError):
+        return {}
+    if data.get('eye_style') not in pl.eye_styles.STYLE_IDS:
+        data['eye_style'] = None
+    return data
+
+
+@app.route('/api/drawing-settings', methods=['POST'])
+def update_drawing_settings():
+    """{eye_style: id de eye_styles.STYLES, o null = dejar los ojos del boceto}.
+    Vale para los retratos que se generen desde ahora."""
+    body = request.get_json(silent=True) or {}
+    style = body.get('eye_style') or None
+    if style is not None and style not in pl.eye_styles.STYLE_IDS:
+        return jsonify(error='estilo de ojos desconocido'), 400
+    data = dict(_drawing_settings(), eye_style=style)
+    with open(DRAWING_SETTINGS_PATH, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, indent=2)
+    return jsonify(_cal_state(request.args.get('profile')))
 
 
 def _cal_state(selected_id=None):
@@ -448,6 +522,8 @@ def _cal_state(selected_id=None):
                    fresh_mode=str(pl.lib.LAST_FRESH_MODE) if pl.lib.LAST_FRESH_MODE is not None else None),
         task=dict(CAL_TASK),
         corner_labels=cal.CORNER_LABELS,
+        eye_styles=[dict(id=s, name=n) for s, n in pl.eye_styles.STYLES],
+        eye_style=_drawing_settings().get('eye_style'),
     )
 
 
@@ -519,7 +595,8 @@ def calibration_activate(profile_id):
 @app.route('/api/calibration/profiles/<profile_id>/capture/<corner>', methods=['POST'])
 def calibration_capture(profile_id, corner):
     """Lee la posicion actual del brazo y la guarda como esa esquina. Para
-    'center' solo se guarda la altura (Z): el centro no cambia el area."""
+    'center' se guarda la altura (Z) y la posicion (x, y) del centro real de
+    la hoja: corrige el medio del dibujo, pero no cambia el area."""
     if corner not in cal.CORNERS + ('center',):
         return jsonify(error='esquina invalida'), 400
     try:
@@ -527,7 +604,7 @@ def calibration_capture(profile_id, corner):
         with robot.use('leyendo posicion') as mc:
             coords = cal.read_coords(mc)
             if corner == 'center':
-                cal.update(profile_id, {'center_z': coords[2]})
+                cal.update(profile_id, {'center_z': coords[2], 'center_xy': coords[:2]})
             else:
                 cal.update(profile_id, {'corners': {corner: coords}})
     except Exception as exc:
@@ -566,20 +643,57 @@ def calibration_robot(action):
         if action == 'disconnect':
             _without_robot_moving('desconectando', robot.disconnect)
             return jsonify(_cal_state(request.args.get('profile')))
-        if action not in ('release', 'lock', 'read'):
+        if action not in ('release', 'lock', 'read', 'servos'):
             return jsonify(error='accion invalida'), 400
-        coords = None
+        coords = servos = None
         with robot.use({'release': 'liberando servos', 'lock': 'trabando servos',
-                        'read': 'leyendo posicion'}[action]) as mc:
+                        'read': 'leyendo posicion', 'servos': 'leyendo parametros de servos'}[action]) as mc:
             if action == 'release':
                 mc.release_all_servos()
             elif action == 'lock':
                 mc.focus_all_servos()
+            elif action == 'servos':
+                servos = cal.read_servo_params(mc)
             else:
                 coords = cal.read_coords(mc)
+        if servos is not None:
+            _log_servo_params(servos)
     except Exception as exc:
         return _cal_error(exc)
-    return jsonify(dict(_cal_state(request.args.get('profile')), coords=coords))
+    return jsonify(dict(_cal_state(request.args.get('profile')), coords=coords, servos=servos))
+
+
+def _log_servo_params(servos):
+    log_dir = os.path.join(RUNTIME_DIR, 'calibracion')
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, '%s_servos.log' % time.strftime('%Y%m%d_%H%M%S')), 'w', encoding='utf-8') as log:
+        for servo, params in servos.items():
+            log.write('J%d %s\n' % (servo, ' '.join('%s=%s' % kv for kv in params.items())))
+
+
+@app.route('/api/calibration/servo/j1', methods=['POST'])
+def calibration_servo_j1():
+    """Cambia P, D o I del servo de J1 ({param, value}) o vuelve a los valores
+    originales ({restore: true}). Devuelve los parametros leidos despues."""
+    body = request.get_json(silent=True) or {}
+    try:
+        with robot.use('cambiando parametros de J1') as mc:
+            if body.get('restore'):
+                cal.restore_j1(mc)
+                change = 'J1 restaurado a %s' % cal.J1_ORIGINAL
+            else:
+                value = cal.write_j1_param(mc, str(body.get('param', '')), body.get('value'))
+                change = 'J1 %s=%d' % (body.get('param'), value)
+            servos = cal.read_servo_params(mc)
+        # historial de cambios, para saber siempre que se toco y como volver
+        log_dir = os.path.join(RUNTIME_DIR, 'calibracion')
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, 'servo_cambios.log'), 'a', encoding='utf-8') as log:
+            log.write('%s %s -> J1 ahora %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), change, servos[1]))
+        _log_servo_params(servos)
+    except Exception as exc:
+        return _cal_error(exc)
+    return jsonify(dict(_cal_state(request.args.get('profile')), servos=servos, servo_change=change))
 
 
 # En el contorno (ver lib.outline_moves) cada punto es una esquina de la hoja.
@@ -617,7 +731,9 @@ def _run_cal_task(kind, moves):
             if kind == 'precision':
                 CAL_TASK['precision'] = cal.precision_test(robot.get(), progress_cb=progress_cb)
             else:
+                # el contorno queda igual: sus etiquetas de esquina dependen del orden de los puntos
                 result = pl.draw(robot.get(), moves, progress_cb=progress_cb, preserve_aspect=False,
+                                 unidirectional=None if kind != 'outline' else False,
                                  bounds=pl.lib.area_bounds(), check_every=1)
                 CAL_TASK['sync'] = (result or {}).get('sync')
                 CAL_TASK['robot_errors'] = _describe_robot_errors(
@@ -644,6 +760,8 @@ def calibration_test(kind):
             moves = []
         elif kind == 'face':
             moves = pl.lib.test_face_moves(cal.active_rotation_deg())
+        elif kind == 'eyes':
+            moves = pl.lib.test_eyes_moves(cal.active_rotation_deg())
         else:
             moves = pl.lib.outline_moves() if kind == 'outline' else pl.lib.test_pattern_moves()
     except ValueError as exc:

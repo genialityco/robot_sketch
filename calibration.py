@@ -110,9 +110,37 @@ def _validate(profile):
         raise ValueError('el juego de la base no es un numero')
     if not 0 <= backlash <= J1_BACKLASH_MAX_DEG:
         raise ValueError('el juego de la base debe estar entre 0 y %g grados' % J1_BACKLASH_MAX_DEG)
+    center_xy = profile.get('center_xy')
+    if center_xy in (None, '', []):
+        center_xy = None
+    else:
+        try:
+            center_xy = [round(float(v), 2) for v in center_xy]
+        except (TypeError, ValueError):
+            raise ValueError('la posicion del centro debe ser dos numeros (x, y)')
+        if len(center_xy) != 2 or not all(math.isfinite(v) for v in center_xy):
+            raise ValueError('la posicion del centro debe ser dos numeros (x, y)')
+        ccx, ccy = _corners_center_xy(corners)
+        off = math.dist(center_xy, (ccx, ccy))
+        if off > CENTER_XY_MAX_OFFSET_MM:
+            raise ValueError('la punta esta en x %.1f, y %.1f, a %.0f mm del centro que dan las esquinas '
+                             '(x %.1f, y %.1f; se acepta hasta %d mm). O la punta no estaba en el centro de la '
+                             'hoja, o alguna esquina esta mal capturada: con "Ir encima" de cada esquina se ve '
+                             'cual no cae en su lugar.'
+                             % (center_xy[0], center_xy[1], off, ccx, ccy, CENTER_XY_MAX_OFFSET_MM))
     return dict(name=name, corners=corners, z_adjust_mm=z_adjust, center_z=center_z,
-                center_z_adjust_mm=center_adjust, manual_skew_mm=skew, pen_lift_mm=lift,
-                drawing_rotation=rotation, j1_backlash_deg=backlash)
+                center_z_adjust_mm=center_adjust, center_xy=center_xy, manual_skew_mm=skew, pen_lift_mm=lift,
+                drawing_rotation=rotation, j1_backlash_deg=backlash,
+                j1_unidirectional=bool(profile.get('j1_unidirectional', False)))
+
+
+# Un centro capturado mas lejos que esto del que dan las esquinas no es un
+# error de medicion: la punta no estaba en el centro de la hoja.
+CENTER_XY_MAX_OFFSET_MM = 20
+
+
+def _corners_center_xy(corners):
+    return (sum(corners[k][0] for k in CORNERS) / 4, sum(corners[k][1] for k in CORNERS) / 4)
 
 
 # Compensacion del juego de J1 (ver gcode_draw_lib.J1Backlash). Medido ~1.5
@@ -161,6 +189,8 @@ def center_target(profile):
     es la del centro si esta medida, o la del plano de las esquinas si no."""
     c = effective_corners(profile)
     xyz = [sum(c[k][i] for k in CORNERS) / 4 for i in range(3)]
+    if profile.get('center_xy') is not None:
+        xyz[0], xyz[1] = profile['center_xy']
     center_z = effective_center_z(profile)
     if center_z is not None:
         xyz[2] = center_z
@@ -224,8 +254,10 @@ def load(profile_id):
     data['id'] = profile_id
     data.setdefault('drawing_rotation', 0)
     data.setdefault('center_z', None)
+    data.setdefault('center_xy', None)
     data.setdefault('center_z_adjust_mm', 0.0)
     data.setdefault('j1_backlash_deg', 0.0)
+    data.setdefault('j1_unidirectional', False)
     data.setdefault('z_adjust_mm', {})  # perfiles guardados antes de existir el ajuste
     for key in CORNERS:
         data['z_adjust_mm'].setdefault(key, 0.0)
@@ -258,7 +290,9 @@ def _apply(profile):
     c = effective_corners(profile)
     pl.lib.set_calibration(c['top_left'], c['top_right'], c['bottom_right'], c['bottom_left'],
                            manual_skew_mm=profile['manual_skew_mm'], pen_lift_mm=profile['pen_lift_mm'],
-                           center_z=effective_center_z(profile), j1_backlash_deg=profile['j1_backlash_deg'])
+                           center_z=effective_center_z(profile), j1_backlash_deg=profile['j1_backlash_deg'],
+                           center_xy=profile['center_xy'])
+    pl.j1u.ENABLED = profile['j1_unidirectional']
 
 
 def activate(profile_id):
@@ -283,8 +317,8 @@ def create(name, copy_from=None):
 def update(profile_id, changes):
     current = load(profile_id)
     merged = dict(current)
-    for key in ('name', 'manual_skew_mm', 'pen_lift_mm', 'drawing_rotation', 'center_z', 'center_z_adjust_mm',
-                'j1_backlash_deg'):
+    for key in ('name', 'manual_skew_mm', 'pen_lift_mm', 'drawing_rotation', 'center_z', 'center_z_adjust_mm', 'center_xy',
+                'j1_backlash_deg', 'j1_unidirectional'):
         if key in changes:
             merged[key] = changes[key]
     if 'corners' in changes:
@@ -330,6 +364,10 @@ def describe(profile):
     center_z = effective_center_z(profile)
     diag['plane_center_z'] = round(plane_center_z, 2)
     diag['center_offset_mm'] = None if center_z is None else round(center_z - plane_center_z, 1)
+    cx, cy = _corners_center_xy(c)
+    diag['corners_center_xy'] = [round(cx, 2), round(cy, 2)]
+    diag['center_xy_offset_mm'] = (None if profile.get('center_xy') is None else
+                                   round(math.dist(profile['center_xy'], (cx, cy)), 1))
     return dict(profile, effective_corners=c, diagnostics=diag, active=(profile['id'] == active_id()),
                 drawing_rotation_resolved=drawing_rotation_deg(profile))
 
@@ -342,6 +380,67 @@ def area_mm():
 # ---------------------------------------------------------------------------
 # Acciones sobre el brazo (siempre dentro de robot.use(...))
 # ---------------------------------------------------------------------------
+# Parametros internos de los servos (direcciones de pymycobot/demo/change_pid.py,
+# la herramienta oficial de Elephant). Valores de referencia de esa demo:
+# "alta precision" P10 D0 I1 arranque0 zm3/3; "estabilizar" J1-J3 P5 D15 I0.
+# P baja + I=0 = el servo cede al empujarlo y se queda corto antes del punto
+# pedido, del lado del que venia (se ve como juego aunque no lo sea).
+SERVO_PARAMS = [(21, 'P'), (22, 'D'), (23, 'I'), (24, 'arranque'), (26, 'zona_muerta_1'), (27, 'zona_muerta_2')]
+
+
+def read_servo_params(mc):
+    """Solo LEE los parametros de los 6 servos (no escribe nada en el brazo).
+    Devuelve {1: {'P': 10, ...}, ...}; None donde el servo no respondio."""
+    out = {}
+    for servo in range(1, 7):
+        row = {}
+        for address, name in SERVO_PARAMS:
+            try:
+                value = mc.get_servo_data(servo, address)
+            except Exception:
+                value = None
+            row[name] = value if isinstance(value, int) and value >= 0 else None
+            time.sleep(0.05)
+        out[servo] = row
+    return out
+
+
+# Ajuste de J1 (base). Leidos 2026-09-26: J1 P=15 D=20 I=0, contra P=32 en J2
+# y J3 -- la base tenia la mitad de rigidez que los ejes que dibujan bien, y
+# cedia ~1 cm al empujarla con el brazo trabado. Solo se deja tocar P, D e I
+# de J1, en rangos cerca de los presets oficiales (change_pid.py y la GUI de
+# fabrica usan P 5-32, D 0-25, I 0-1): valores mucho mas altos pueden hacer
+# vibrar el eje. Lo que se escribe queda guardado en el servo (sobrevive al
+# apagado); J1_ORIGINAL permite volver atras.
+J1_TUNABLE = {'P': (21, 5, 40), 'D': (22, 0, 40), 'I': (23, 0, 3)}   # nombre: (direccion, min, max)
+J1_ORIGINAL = {'P': 15, 'D': 20, 'I': 0}
+
+
+def write_j1_param(mc, name, value):
+    """Escribe un parametro de J1 y lo verifica leyendolo de vuelta."""
+    if name not in J1_TUNABLE:
+        raise ValueError('parametro invalido: solo se puede cambiar %s de J1' % ', '.join(J1_TUNABLE))
+    address, lo, hi = J1_TUNABLE[name]
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ValueError('el valor de %s debe ser un numero entero' % name)
+    if not lo <= value <= hi:
+        raise ValueError('%s de J1 debe estar entre %d y %d' % (name, lo, hi))
+    mc.set_servo_data(1, address, value)
+    time.sleep(0.2)
+    read = mc.get_servo_data(1, address)
+    if read != value:
+        raise ValueError('se escribio %s=%d en J1 pero el servo devolvio %r: el cambio no quedo aplicado'
+                         % (name, value, read))
+    return value
+
+
+def restore_j1(mc):
+    for name, value in J1_ORIGINAL.items():
+        write_j1_param(mc, name, value)
+
+
 def read_coords(mc, attempts=4):
     """get_coords a veces devuelve -1 o una lista vacia/en cero mientras el
     brazo se asienta o con los servos liberados; se reintenta un poco."""

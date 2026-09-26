@@ -133,11 +133,25 @@
     card.querySelector('[data-role="zeff"]').textContent = 'Z al dibujar: ' + (z - adj).toFixed(2) + ' (' + text + ')';
   }
 
+  function centerXYText() {
+    const d = state && state.profile ? state.profile.diagnostics : null;
+    const x = el('cal-center-x').value, y = el('cal-center-y').value;
+    if (x === '' || y === '') {
+      return 'Posición sin medir: el centro se calcula con las esquinas' +
+        (d ? ' (x ' + d.corners_center_xy[0].toFixed(1) + ', y ' + d.corners_center_xy[1].toFixed(1) + ')' : '') + '. ';
+    }
+    if (!d) return '';
+    const dx = Number(x) - d.corners_center_xy[0], dy = Number(y) - d.corners_center_xy[1];
+    return 'Posición: el centro real queda a ' + Math.hypot(dx, dy).toFixed(1) + ' mm del calculado con las ' +
+      'esquinas (x ' + (dx >= 0 ? '+' : '') + dx.toFixed(1) + ', y ' + (dy >= 0 ? '+' : '') + dy.toFixed(1) +
+      '); el medio del dibujo se corre eso. ';
+  }
+
   function updateCenterInfo() {
     const raw = el('cal-center-z').value;
     const plane = state && state.profile ? state.profile.diagnostics.plane_center_z : null;
     if (raw === '') {
-      el('cal-center-eff').textContent = 'Sin medir: el medio de la hoja se calcula solo con las esquinas' +
+      el('cal-center-eff').textContent = centerXYText() + 'Altura sin medir: se calcula solo con las esquinas' +
         (plane !== null ? ' (Z ' + plane.toFixed(2) + ').' : '.');
       return;
     }
@@ -148,7 +162,7 @@
       text += ' (' + (Math.abs(diff) < 0.05 ? 'igual que' : Math.abs(diff).toFixed(1) + ' mm más ' +
         (diff > 0 ? 'arriba' : 'abajo') + ' que') + ' el plano de las esquinas)';
     }
-    el('cal-center-eff').textContent = text;
+    el('cal-center-eff').textContent = centerXYText() + text;
   }
 
   function fillForm(profile) {
@@ -157,12 +171,15 @@
       fillCorner(c, profile.corners[c]);
     });
     el('cal-center-z').value = profile.center_z === null || profile.center_z === undefined ? '' : profile.center_z;
+    el('cal-center-x').value = profile.center_xy ? profile.center_xy[0] : '';
+    el('cal-center-y').value = profile.center_xy ? profile.center_xy[1] : '';
     el('cal-center-adj').value = profile.center_z_adjust_mm || 0;
     updateCenterInfo();
     el('cal-name').value = profile.name;
     el('cal-skew').value = profile.manual_skew_mm;
     el('cal-lift').value = profile.pen_lift_mm;
     el('cal-backlash').value = profile.j1_backlash_deg || 0;
+    el('cal-unidir').checked = !!profile.j1_unidirectional;
     el('cal-rotation').value = String(profile.drawing_rotation_resolved);
     el('cal-rotation-info').textContent = 'El preview muestra la hoja con las esquinas "arriba" hacia arriba, ' +
       'como la ves al medirla. Girá el dibujo solo si querés la cabeza hacia otro lado de la hoja.';
@@ -211,7 +228,7 @@
       const p = t.progress || { i: 0, total: 1 };
       prog.value = p.total ? Math.round((100 * p.i) / p.total) : 0;
       el('cal-test-message').textContent = ({ outline: 'Dibujando contorno', pattern: 'Dibujando patrón',
-        face: 'Dibujando rostro', precision: 'Midiendo precisión' }[t.kind] || 'Probando') +
+        face: 'Dibujando rostro', eyes: 'Dibujando prueba de ojos', precision: 'Midiendo precisión' }[t.kind] || 'Probando') +
         '… ' + (t.message || '') + (t.progress ? ' (' + t.progress.i + '/' + t.progress.total + ')' : '');
     } else {
       prog.classList.add('hidden');
@@ -233,6 +250,7 @@
     el('cal-test-outline').disabled = robotBusy || !isActive;
     el('cal-test-pattern').disabled = robotBusy || !isActive;
     el('cal-test-face').disabled = robotBusy || !isActive;
+    el('cal-test-eyes').disabled = robotBusy || !isActive;
     el('cal-test-precision').disabled = robotBusy || !isActive;
     el('cal-activate').disabled = robotBusy || isActive;
     el('cal-delete').disabled = isActive;
@@ -241,7 +259,17 @@
       'activo (' + activeName + '). Tocá "Usar este perfil" para probar este.';
   }
 
+  function renderEyeStyles() {
+    const sel = el('cal-eye-style');
+    if (!sel.options.length) {
+      sel.appendChild(new Option('Los del boceto (sin cambiar)', ''));
+      state.eye_styles.forEach((s, i) => sel.appendChild(new Option((i + 1) + '. ' + s.name, s.id)));
+    }
+    sel.value = state.eye_style || '';
+  }
+
   function renderProfiles() {
+    renderEyeStyles();
     const sel = el('cal-profile');
     sel.innerHTML = '';
     state.profiles.forEach((p) => {
@@ -322,8 +350,11 @@
       manual_skew_mm: Number(el('cal-skew').value),
       pen_lift_mm: Number(el('cal-lift').value),
       j1_backlash_deg: Number(el('cal-backlash').value || 0),
+      j1_unidirectional: el('cal-unidir').checked,
       drawing_rotation: el('cal-rotation').value,
       center_z: el('cal-center-z').value === '' ? null : Number(el('cal-center-z').value),
+      center_xy: el('cal-center-x').value === '' || el('cal-center-y').value === '' ? null :
+        [Number(el('cal-center-x').value), Number(el('cal-center-y').value)],
       center_z_adjust_mm: Number(el('cal-center-adj').value || 0),
       corners: corners,
       z_adjust_mm: zAdjust,
@@ -364,6 +395,7 @@
   }));
 
   ['cal-name', 'cal-skew', 'cal-lift', 'cal-backlash', 'cal-rotation'].forEach((id) => el(id).addEventListener('input', markDirty));
+  el('cal-unidir').addEventListener('change', markDirty);
 
   // --- Esquinas ------------------------------------------------------------
   function labelOf(corner) {
@@ -372,31 +404,43 @@
 
   async function cornerAction(corner, action) {
     await run(async () => {
-      if (action === 'capture') {
-        const data = await api(profileUrl('/capture/' + corner), 'POST');
-        apply(data, false);
-        if (corner === 'center') {
-          el('cal-center-z').value = data.captured.coords[2];
-          updateCenterInfo();
-          el('cal-coords').textContent = 'Centro capturado: Z ' + data.captured.coords[2] +
-            ' (solo se guarda la altura).';
-        } else {
-          fillCorner(corner, data.captured.coords);
-          el('cal-coords').textContent = labelOf(corner) + ' capturada: ' + data.captured.coords.join(', ');
-        }
-        return;
+      try {
+        await cornerActionInner(corner, action);
+      } catch (err) {
+        // el error general sale al final de la pagina: el del centro tambien en su tarjeta
+        if (corner === 'center') el('cal-center-eff').textContent = 'No se pudo: ' + err.message;
+        throw err;
       }
-      if (dirty) {
-        throw new Error('Guardá los cambios primero: el brazo va a la posición guardada, no a la editada.');
-      }
-      if (action === 'touch' && !confirm('El brazo va a ir a la esquina y bajar hasta tocar el papel. ¿Seguir?')) {
-        return;
-      }
-      el('cal-coords').textContent = 'Moviendo a ' + labelOf(corner) + '…';
-      apply(await api(profileUrl('/goto/' + corner), 'POST', { hover_mm: action === 'touch' ? 0 : 10 }), false);
-      el('cal-coords').textContent = 'En ' + labelOf(corner) +
-        (action === 'touch' ? ' (tocando).' : ' (10 mm arriba).');
     });
+  }
+
+  async function cornerActionInner(corner, action) {
+    if (action === 'capture') {
+      const data = await api(profileUrl('/capture/' + corner), 'POST');
+      apply(data, false);
+      if (corner === 'center') {
+        el('cal-center-x').value = data.captured.coords[0];
+        el('cal-center-y').value = data.captured.coords[1];
+        el('cal-center-z').value = data.captured.coords[2];
+        updateCenterInfo();
+        el('cal-coords').textContent = 'Centro capturado y guardado: x ' + data.captured.coords[0] + ', y ' +
+          data.captured.coords[1] + ', Z ' + data.captured.coords[2] + '.';
+      } else {
+        fillCorner(corner, data.captured.coords);
+        el('cal-coords').textContent = labelOf(corner) + ' capturada: ' + data.captured.coords.join(', ');
+      }
+      return;
+    }
+    if (dirty) {
+      throw new Error('Guardá los cambios primero: el brazo va a la posición guardada, no a la editada.');
+    }
+    if (action === 'touch' && !confirm('El brazo va a ir a la esquina y bajar hasta tocar el papel. ¿Seguir?')) {
+      return;
+    }
+    el('cal-coords').textContent = 'Moviendo a ' + labelOf(corner) + '…';
+    apply(await api(profileUrl('/goto/' + corner), 'POST', { hover_mm: action === 'touch' ? 0 : 10 }), false);
+    el('cal-coords').textContent = 'En ' + labelOf(corner) +
+      (action === 'touch' ? ' (tocando).' : ' (10 mm arriba).');
   }
 
   el('cal-center-capture').addEventListener('click', () => cornerAction('center', 'capture'));
@@ -404,10 +448,12 @@
   el('cal-center-touch').addEventListener('click', () => cornerAction('center', 'touch'));
   el('cal-center-clear').addEventListener('click', () => {
     el('cal-center-z').value = '';
+    el('cal-center-x').value = '';
+    el('cal-center-y').value = '';
     markDirty();
     updateCenterInfo();
   });
-  ['cal-center-z', 'cal-center-adj'].forEach((id) => el(id).addEventListener('input', () => {
+  ['cal-center-x', 'cal-center-y', 'cal-center-z', 'cal-center-adj'].forEach((id) => el(id).addEventListener('input', () => {
     markDirty();
     updateCenterInfo();
   }));
@@ -417,12 +463,34 @@
     return () => run(async () => {
       const data = await api('/api/calibration/robot/' + action + '?profile=' + encodeURIComponent(selectedId), 'POST');
       apply(data, false);
-      el('cal-coords').textContent = data.coords ? 'Posición actual: ' + data.coords.join(', ') : message;
+      el('cal-coords').textContent = data.coords ? 'Posición actual: ' + data.coords.join(', ') :
+        data.servos ? Object.entries(data.servos).map(([servo, p]) => 'J' + servo + '  ' +
+          Object.entries(p).map(([k, v]) => k + '=' + (v === null ? '?' : v)).join('  ')).join('\n') : message;
     });
   }
   el('cal-release').addEventListener('click', robotAction('release', 'Brazo liberado: movelo a mano.'));
   el('cal-lock').addEventListener('click', robotAction('lock', 'Brazo trabado.'));
   el('cal-read').addEventListener('click', robotAction('read', ''));
+  el('cal-servos').addEventListener('click', robotAction('servos', ''));
+
+  function showServos(data, prefix) {
+    el('cal-coords').textContent = prefix + '\n' + Object.entries(data.servos).map(([servo, p]) => 'J' + servo +
+      '  ' + Object.entries(p).map(([k, v]) => k + '=' + (v === null ? '?' : v)).join('  ')).join('\n');
+  }
+  function j1Action(body, question) {
+    return () => run(async () => {
+      if (!confirm(question())) return;
+      const data = await api('/api/calibration/servo/j1?profile=' + encodeURIComponent(selectedId), 'POST', body());
+      apply(data, false);
+      showServos(data, 'Hecho: ' + data.servo_change + '.');
+    });
+  }
+  el('cal-j1-write').addEventListener('click', j1Action(
+    () => ({ param: el('cal-j1-param').value, value: Number(el('cal-j1-value').value) }),
+    () => '¿Escribir ' + el('cal-j1-param').value + ' = ' + el('cal-j1-value').value +
+      ' en el servo de J1? Queda guardado en el servo.'));
+  el('cal-j1-restore').addEventListener('click', j1Action(
+    () => ({ restore: true }), () => '¿Volver J1 a los valores originales (P 15, D 20, I 0)?'));
   el('cal-disconnect').addEventListener('click', robotAction('disconnect', 'Conexión cerrada.'));
 
   // --- Pruebas -------------------------------------------------------------
@@ -435,6 +503,12 @@
   el('cal-test-outline').addEventListener('click', testAction('outline', 'contorno del área'));
   el('cal-test-pattern').addEventListener('click', testAction('pattern', 'patrón de prueba'));
   el('cal-test-face').addEventListener('click', testAction('face', 'rostro de prueba'));
+  el('cal-test-eyes').addEventListener('click', testAction('eyes', 'prueba de ojos (todos los estilos, numerados)'));
+  el('cal-eye-style').addEventListener('change', () => run(async () => {
+    apply(await api('/api/drawing-settings?profile=' + encodeURIComponent(selectedId), 'POST',
+      { eye_style: el('cal-eye-style').value || null }), false);
+    el('cal-test-message').textContent = 'Estilo de ojos guardado: se usa en los retratos que generes desde ahora.';
+  }));
   el('cal-test-precision').addEventListener('click', testAction('precision', 'crucecitas de la prueba de precisión'));
 
   // nombre del perfil activo en el encabezado, tambien en la pestaña Dibujar
