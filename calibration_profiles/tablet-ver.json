@@ -1,0 +1,56 @@
+{
+  "name": "tablet_ver",
+  "corners": {
+    "top_left": [
+      275.5,
+      -3.3,
+      112.5,
+      175.18,
+      -7.46,
+      66.55
+    ],
+    "top_right": [
+      276.4,
+      -82.0,
+      119.4,
+      173.92,
+      -2.32,
+      66.84
+    ],
+    "bottom_right": [
+      164.5,
+      -78.8,
+      113.9,
+      175.77,
+      -0.68,
+      66.26
+    ],
+    "bottom_left": [
+      170.9,
+      8.0,
+      112.8,
+      178.34,
+      1.31,
+      63.52
+    ]
+  },
+  "z_adjust_mm": {
+    "top_left": -10.0,
+    "top_right": 0.0,
+    "bottom_right": 0.0,
+    "bottom_left": -10.0
+  },
+  "center_z": null,
+  "center_z_adjust_mm": -10.0,
+  "center_xy": null,
+  "manual_skew_mm": 2.0,
+  "pen_lift_mm": 25.0,
+  "drawing_rotation": 90,
+  "j1_backlash_deg": 1.6,
+  "j1_unidirectional": false,
+  "j1_direction": -1,
+  "tablet_mode": false,
+  "tablet_orient": null,
+  "id": "tablet-ver",
+  "updated_at": "2026-09-28 11:46"
+}

@@ -5,3 +5,6 @@ __pycache__/
 venv/
 # modelo de MediaPipe que draw_person.py descarga solo la primera vez (~4 MB)
 lib/.cache/
+
+# credenciales de Firebase (cuenta de servicio): NUNCA al repositorio
+*firebase-adminsdk*.json

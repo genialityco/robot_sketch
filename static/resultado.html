@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tu retrato</title>
+<style>
+  :root {
+    --paper: #f4efe6;
+    --paper-2: #ebe3d6;
+    --card: #fffdf9;
+    --ink: #1d1b18;
+    --muted: #6d665c;
+    --line: #d9d0c2;
+    --accent: #b9542e;
+    --accent-ink: #fff;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: radial-gradient(120% 90% at 50% 0%, #faf6ef 0%, var(--paper) 55%, var(--paper-2) 100%) fixed;
+    color: var(--ink); font-family: var(--sans);
+    -webkit-user-select: none; user-select: none;
+  }
+  /* textura de papel muy suave */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .35;
+    background-image: radial-gradient(rgba(0,0,0,.035) 1px, transparent 1px);
+    background-size: 3px 3px;
+  }
+  .brand {
+    position: fixed; top: max(3vh, env(safe-area-inset-top)); left: 0; right: 0; text-align: center;
+    font: 600 clamp(11px, 1.4vmin, 15px)/1 var(--sans); letter-spacing: .32em; text-transform: uppercase; color: var(--muted);
+  }
+  .brand b { color: var(--accent); font-weight: 600; }
+
+  .state { position: fixed; inset: 0; display: flex; pointer-events: none;
+           padding: 9vh 6vw 7vh; opacity: 0; visibility: hidden; transform: translateY(12px);
+           transition: opacity .6s ease, transform .6s ease, visibility 0s linear .6s; }
+  /* la pantalla activa va en el flujo normal de la pagina: si no entra (celular),
+     se desplaza la pagina entera, lo mas confiable en cualquier navegador */
+  .state.on { position: relative; min-height: 100vh; min-height: 100dvh; pointer-events: auto;
+              overflow-x: hidden; overflow-x: clip;   /* lo girado (las hojas) no genera desplazamiento lateral */
+              opacity: 1; visibility: visible; transform: none; transition: opacity .6s ease, transform .6s ease; }
+  /* centrado si entra; si no, empieza arriba sin cortar nada */
+  .state > * { margin: auto; }
+
+  h1 { font: 500 clamp(30px, 6vmin, 72px)/1.08 var(--serif); margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+  h2 { font: 500 clamp(24px, 4.2vmin, 48px)/1.1 var(--serif); margin: 0; text-wrap: balance; }
+  p.lead { font-size: clamp(16px, 2.3vmin, 24px); color: var(--muted); margin: 1.4vmin 0 0; line-height: 1.45; max-width: 34ch; }
+
+  /* --- botones ---------------------------------------------------------------- */
+  .btn { font: 600 clamp(16px, 2.3vmin, 24px)/1 var(--sans); border-radius: 999px; border: 1.5px solid var(--accent);
+         padding: clamp(14px, 2.2vmin, 22px) clamp(24px, 3.6vmin, 40px); cursor: pointer; display: inline-flex;
+         align-items: center; gap: .6em; transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+         -webkit-tap-highlight-color: transparent; text-decoration: none; }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); box-shadow: 0 8px 22px -8px rgba(185,84,46,.6); }
+  .btn.ghost { background: transparent; color: var(--accent); }
+  .btn:active { transform: scale(.97); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn svg { width: 1.2em; height: 1.2em; flex: none; }
+  .actions { display: flex; flex-wrap: wrap; gap: 1.6vmin; align-items: center; }
+  .note { color: var(--muted); font-size: clamp(14px, 1.9vmin, 19px); min-height: 1.4em; margin: 0; }
+  .note.err { color: var(--accent); }
+  input[type=file], [hidden] { display: none !important; }
+
+  /* --- inicio / dibujando ------------------------------------------------------ */
+  .center { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 3vmin; }
+  .scribble { width: min(46vmin, 420px); height: auto; }
+  .scribble path { fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+                   stroke-dasharray: 1400; stroke-dashoffset: 1400; animation: draw 7s ease-in-out infinite; }
+  @keyframes draw { 0% { stroke-dashoffset: 1400; } 55%, 75% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -1400; } }
+  .progress { width: min(60vw, 520px); }
+  .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width .5s ease; }
+  .progress .meta { display: flex; justify-content: space-between; margin-top: 1.4vmin; color: var(--muted);
+                    font: 500 clamp(13px, 1.8vmin, 18px)/1 var(--sans); font-variant-numeric: tabular-nums; }
+
+  /* --- camara ------------------------------------------------------------------- */
+  .cam { display: flex; flex-direction: column; align-items: center; gap: 2.4vmin; }
+  .viewer { position: relative; width: min(78vw, calc(62vh * 4 / 3), 900px); aspect-ratio: 4 / 3; border-radius: 22px;
+            overflow: hidden; background: #2a2622; box-shadow: 0 20px 50px -18px rgba(60,40,20,.45); }
+  .viewer video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: block; }
+  .viewer .guide { position: absolute; left: 50%; top: 47%; width: 38%; height: 74%; transform: translate(-50%, -50%);
+                   border: 3px dashed rgba(255,255,255,.75); border-radius: 50%; pointer-events: none;
+                   box-shadow: 0 0 0 100vmax rgba(0,0,0,.18); }
+  .viewer .count { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+                   font: 500 clamp(80px, 22vmin, 220px)/1 var(--serif); color: #fff; text-shadow: 0 4px 30px rgba(0,0,0,.5); }
+  .viewer .count span { animation: pop 1s ease both; }
+  @keyframes pop { from { transform: scale(1.6); opacity: 0; } 30% { transform: scale(1); opacity: 1; } to { opacity: .2; } }
+  .viewer .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  .viewer .flash.go { animation: flash .5s ease-out; }
+  @keyframes flash { from { opacity: .95; } to { opacity: 0; } }
+  .shutter { width: clamp(72px, 11vmin, 104px); height: clamp(72px, 11vmin, 104px); border-radius: 50%; cursor: pointer;
+             border: 5px solid var(--card); background: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 10px 26px -8px rgba(185,84,46,.7);
+             -webkit-tap-highlight-color: transparent; transition: transform .15s ease; }
+  .shutter:active { transform: scale(.94); }
+  .shutter:disabled { opacity: .5; }
+  .cam .row { display: flex; align-items: center; gap: 4vmin; }
+
+  /* --- papel con la foto / el retrato (polaroid) -------------------------------- */
+  .split { display: flex; align-items: center; justify-content: center; gap: clamp(28px, 6vw, 110px);
+           width: 100%; flex-wrap: wrap; }
+  .sheet {
+    background: var(--card); padding: clamp(12px, 2.2vmin, 26px) clamp(12px, 2.2vmin, 26px) clamp(38px, 6vmin, 68px);
+    box-shadow: 0 1px 1px rgba(0,0,0,.05), 0 12px 30px rgba(60,40,20,.14), 0 40px 80px -20px rgba(60,40,20,.25);
+    transform: rotate(-1.6deg); position: relative; max-width: 46vw; margin: 0;
+    animation: settle .9s cubic-bezier(.2,.7,.2,1) both;
+  }
+  .sheet.right { transform: rotate(1.4deg); animation-name: settle-r; }
+  @keyframes settle { from { transform: rotate(-5deg) translateY(30px); opacity: 0; } to { transform: rotate(-1.6deg); opacity: 1; } }
+  @keyframes settle-r { from { transform: rotate(5deg) translateY(30px); opacity: 0; } to { transform: rotate(1.4deg); opacity: 1; } }
+  .sheet img { display: block; max-height: 68vh; max-width: 100%; height: auto;
+               -webkit-touch-callout: default; -webkit-user-select: auto; user-select: auto; }   /* mantener presionada = guardar */
+  .sheet.photo img { max-height: 56vh; }
+  .sheet figcaption {
+    position: absolute; left: 0; right: 0; bottom: clamp(10px, 1.8vmin, 22px); text-align: center;
+    font: italic 400 clamp(14px, 2vmin, 22px)/1 var(--serif); color: var(--muted);
+  }
+  .sheet .tape { position: absolute; top: -14px; left: 50%; width: 110px; height: 28px; transform: translateX(-50%) rotate(2deg);
+                 background: rgba(230,215,185,.75); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .sheet .veil { position: absolute; inset: clamp(12px, 2.2vmin, 26px) clamp(12px, 2.2vmin, 26px) clamp(38px, 6vmin, 68px);
+                 background: linear-gradient(100deg, rgba(255,253,249,0) 30%, rgba(255,253,249,.55) 50%, rgba(255,253,249,0) 70%) 0 0 / 250% 100%;
+                 animation: shimmer 1.8s linear infinite; }
+
+  .take { display: flex; flex-direction: column; gap: 2.6vmin; max-width: 460px; animation: rise .9s .25s ease both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+  .kicker { font: 600 clamp(12px, 1.5vmin, 15px)/1 var(--sans); letter-spacing: .24em; text-transform: uppercase; color: var(--accent); }
+  .qrcard { background: #fff; border-radius: 18px; padding: clamp(14px, 2.2vmin, 24px); align-self: flex-start;
+            box-shadow: 0 10px 30px rgba(60,40,20,.12); border: 1px solid var(--line); }
+  .qrcard img { display: block; width: clamp(180px, 30vmin, 320px); height: auto; image-rendering: pixelated; }
+  .qrcard.wait { width: calc(clamp(180px, 30vmin, 320px) + 2 * clamp(14px, 2.2vmin, 24px)); aspect-ratio: 1;
+                 background: linear-gradient(100deg, #f3eee6 30%, #fbf8f3 50%, #f3eee6 70%) 0 0 / 250% 100%;
+                 animation: shimmer 1.4s linear infinite; }
+  @keyframes shimmer { to { background-position: -150% 0; } }
+  ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: s; color: var(--muted);
+             font-size: clamp(15px, 2vmin, 20px); line-height: 1.5; }
+  ol.steps li { counter-increment: s; display: flex; gap: .7em; align-items: baseline; }
+  ol.steps li::before { content: counter(s); font: 600 .8em/1.9 var(--sans); color: var(--ink); width: 1.9em; height: 1.9em;
+                        border-radius: 50%; border: 1px solid var(--line); background: var(--card); text-align: center; flex: none; }
+  .err { color: var(--accent); }
+
+  /* --- tonos -------------------------------------------------------------------- */
+  .tones { display: grid; grid-template-columns: repeat(auto-fill, minmax(clamp(120px, 15vmin, 160px), 1fr)); gap: 1.4vmin; }
+  .tone { background: var(--card); border: 1.5px solid var(--line); border-radius: 16px; padding: 1.2vmin 1.2vmin 1.4vmin;
+          cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: .8vmin; color: var(--ink);
+          font: 500 clamp(13px, 1.8vmin, 17px)/1.2 var(--sans); transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+          -webkit-tap-highlight-color: transparent; }
+  .tone svg { width: 100%; height: clamp(40px, 6vmin, 60px); }
+  .tone svg path { fill: none; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+  .tone[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(185,84,46,.25); transform: translateY(-2px); }
+
+  /* --- preparando ----------------------------------------------------------------- */
+  ul.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1.4vmin;
+              font-size: clamp(16px, 2.2vmin, 22px); color: var(--muted); }
+  ul.checks li { display: flex; align-items: center; gap: .8em; }
+  ul.checks li::before { content: ""; width: 1.1em; height: 1.1em; border-radius: 50%; border: 2px solid var(--line); flex: none; }
+  ul.checks li.doing { color: var(--ink); }
+  ul.checks li.doing::before { border-color: var(--accent); border-right-color: transparent; animation: spin .9s linear infinite; }
+  ul.checks li.done { color: var(--ink); }
+  ul.checks li.done::before { background: var(--accent); border-color: var(--accent);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (orientation: portrait) {
+    .state { padding: 7vh 6vw 4vh; }
+    .split { gap: 3.5vh; flex-direction: column; flex-wrap: nowrap; }
+    .sheet { max-width: 72vw; }
+    .sheet img, .sheet.photo img { max-height: 34vh; }
+    .take { align-items: center; text-align: center; gap: 1.8vh; max-width: 92vw; }
+    .take .actions { justify-content: center; }
+    .qrcard { align-self: center; }
+    .qrcard img { width: clamp(150px, 22vh, 300px); }
+    .qrcard.wait { width: calc(clamp(150px, 22vh, 300px) + 2 * clamp(14px, 2.2vmin, 24px)); }
+    ol.steps, ul.checks { text-align: left; }
+    .tones { width: 100%; grid-template-columns: repeat(3, 1fr); }
+    .viewer { width: min(88vw, 900px); }
+  }
+
+  /* --- celular ------------------------------------------------------------------ */
+  @media (max-width: 600px) {
+    .brand { position: absolute; top: max(16px, env(safe-area-inset-top)); letter-spacing: .24em; }
+    .state { padding: max(50px, calc(env(safe-area-inset-top) + 38px)) 18px max(28px, calc(env(safe-area-inset-bottom) + 16px)); }
+    h1 { font-size: 32px; }
+    h2 { font-size: 27px; }
+    p.lead { font-size: 16px; margin-top: 6px; }
+    .center { gap: 18px; }
+    .scribble { width: 72vw; }
+    .progress { width: 86vw; }
+    .split { gap: 28px; }
+    .sheet { max-width: 88vw; padding: 10px 10px 34px; }
+    .sheet img, .sheet.photo img { max-height: 44vh; max-height: 44dvh; }
+    .sheet figcaption { font-size: 14px; bottom: 11px; }
+    .sheet .veil { inset: 10px 10px 34px; }
+    .take { width: 100%; max-width: 100%; gap: 14px; }
+    .actions { flex-direction: column; align-items: stretch; gap: 10px; width: 100%; }
+    .take .actions { justify-content: stretch; }
+    .btn { justify-content: center; font-size: 17px; padding: 15px 22px; }
+    .center > .btn { width: 100%; }
+    /* resultado: primero descargar, despues el QR */
+    #s-result .kicker { order: 0; }
+    #s-result h2 { order: 1; }
+    #s-result .actions { order: 2; }
+    #s-result .qrcard { order: 3; }
+    #s-result ol.steps { order: 4; font-size: 15px; }
+    .qrcard { padding: 14px; }
+    .qrcard img { width: 150px; }
+    .qrcard.wait { width: 178px; }
+    .viewer { width: 100%; aspect-ratio: 3 / 4; border-radius: 18px; }
+    .viewer .guide { width: 60%; height: 58%; }
+    .cam { gap: 14px; width: 100%; }
+    .tones { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .tone { padding: 8px 6px 10px; font-size: 13px; border-radius: 12px; }
+    .tone svg { height: 34px; }
+    ul.checks { font-size: 16px; gap: 10px; }
+  }
+</style>
+</head>
+<body>
+<div class="brand">Retrato <b>·</b> dibujado por un robot</div>
+<input type="file" id="file" accept="image/*" capture="user">
+
+<!-- inicio -->
+<section class="state on" id="s-start">
+  <div class="center">
+    <svg class="scribble" viewBox="0 0 420 180" aria-hidden="true">
+      <path d="M20 120 C 60 40, 110 40, 130 95 S 190 160, 215 100 S 250 25, 290 60 S 330 150, 360 110 S 390 60, 400 80"/>
+    </svg>
+    <h1>Un robot va a<br>dibujar tu retrato</h1>
+    <p class="lead">Tomate una foto, elegí el color y mirá cómo el brazo lo dibuja en el lienzo.</p>
+    <button class="btn primary" id="start">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+      Tomarme la foto
+    </button>
+    <p class="note err" id="start-note"></p>
+    <label class="btn ghost" for="file" id="pick" hidden>Elegir una foto</label>
+  </div>
+</section>
+
+<!-- camara -->
+<section class="state" id="s-camera">
+  <div class="cam">
+    <div class="viewer">
+      <video id="video" playsinline muted></video>
+      <div class="guide" aria-hidden="true"></div>
+      <div class="count" id="count" aria-live="assertive"></div>
+      <div class="flash" id="flash"></div>
+    </div>
+    <p class="note">Mirá a la cámara y ubicá tu cara dentro del óvalo.</p>
+    <div class="row">
+      <button class="btn ghost" id="cam-back">Volver</button>
+      <button class="shutter" id="shutter" aria-label="Tomar la foto"></button>
+      <span style="width: 7em" aria-hidden="true"></span>
+    </div>
+  </div>
+</section>
+
+<!-- elegir tono -->
+<section class="state" id="s-tone">
+  <div class="split">
+    <figure class="sheet photo">
+      <span class="tape" aria-hidden="true"></span>
+      <img id="photo" alt="Tu foto">
+      <figcaption>tu foto</figcaption>
+    </figure>
+    <div class="take">
+      <div class="kicker">Paso 2 de 3</div>
+      <h2>Elegí el color de tu retrato</h2>
+      <div class="tones" id="tones" role="group" aria-label="Color del retrato"></div>
+      <div class="actions">
+        <button class="btn primary" id="send">Crear mi retrato</button>
+        <button class="btn ghost" id="retake">Otra foto</button>
+      </div>
+      <p class="note err" id="tone-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- preparando -->
+<section class="state" id="s-making">
+  <div class="split">
+    <figure class="sheet photo">
+      <span class="tape" aria-hidden="true"></span>
+      <img id="making-photo" alt="Tu foto">
+      <span class="veil" aria-hidden="true"></span>
+      <figcaption>tu foto</figcaption>
+    </figure>
+    <div class="take">
+      <div class="kicker">Paso 3 de 3</div>
+      <h2>Preparando tu retrato…</h2>
+      <ul class="checks">
+        <li id="ck-photo">Foto recibida</li>
+        <li id="ck-sketch">Dibujo a lápiz de tu foto</li>
+        <li id="ck-path">Recorrido del brazo</li>
+      </ul>
+      <p class="note">Tarda unos segundos.</p>
+    </div>
+  </div>
+</section>
+
+<!-- como va a quedar -->
+<section class="state" id="s-preview">
+  <div class="split">
+    <figure class="sheet right">
+      <span class="tape" aria-hidden="true"></span>
+      <img id="preview" alt="Así va a quedar tu retrato">
+      <figcaption>así va a quedar</figcaption>
+    </figure>
+    <div class="take">
+      <div class="kicker">Tu retrato está listo</div>
+      <h2>¿Lo dibujamos?</h2>
+      <p class="lead">El brazo lo va a dibujar en el lienzo, trazo a trazo.</p>
+      <div class="actions">
+        <button class="btn primary" id="draw">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/></svg>
+          ¡Dibujalo!
+        </button>
+        <button class="btn ghost" id="again">Otra foto</button>
+      </div>
+      <p class="note err" id="preview-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- algo fallo -->
+<section class="state" id="s-error">
+  <div class="center">
+    <h2>No pudimos preparar tu retrato</h2>
+    <p class="lead" id="error-text">Probemos con otra foto.</p>
+    <button class="btn primary" id="error-retry">Intentar de nuevo</button>
+  </div>
+</section>
+
+<!-- dibujando -->
+<section class="state" id="s-drawing">
+  <div class="center">
+    <svg class="scribble" viewBox="0 0 420 180" aria-hidden="true">
+      <path d="M20 120 C 60 40, 110 40, 130 95 S 190 160, 215 100 S 250 25, 290 60 S 330 150, 360 110 S 390 60, 400 80"/>
+    </svg>
+    <h1>Dibujando tu retrato…</h1>
+    <p class="lead">Mirá el lienzo: aparece mientras el brazo lo recorre.</p>
+    <div class="progress">
+      <div class="bar"><i id="bar"></i></div>
+      <div class="meta"><span id="pct">0%</span><span id="elapsed">0:00</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- listo / preparando / error -->
+<section class="state" id="s-result">
+  <div class="split">
+    <figure class="sheet">
+      <span class="tape" aria-hidden="true"></span>
+      <img id="portrait" alt="Tu retrato">
+      <figcaption id="caption"></figcaption>
+    </figure>
+    <div class="take">
+      <div class="kicker" id="kicker">Llevate tu retrato</div>
+      <h2 id="title">Escaneá el código con tu celular</h2>
+      <div class="qrcard wait" id="qrcard"><img id="qr" alt="Código QR para descargar el retrato" hidden></div>
+      <ol class="steps" id="steps">
+        <li>Abrí la cámara del celular.</li>
+        <li>Apuntá al código.</li>
+        <li>Tocá el enlace y guardá la imagen.</li>
+      </ol>
+      <div class="actions">
+        <a class="btn primary" id="download" download hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+          Descargar imagen
+        </a>
+        <button class="btn ghost" id="next">Hacer otro retrato</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const states = ['s-start', 's-camera', 's-tone', 's-making', 's-preview', 's-error', 's-drawing', 's-result'];
+  let current = 's-start', shownAt = Date.now();
+  function show(id) {
+    if (id === current) return;
+    states.forEach((s) => $(s).classList.toggle('on', s === id));
+    current = id; shownAt = Date.now();
+    window.scrollTo(0, 0);   // cada pantalla empieza arriba
+  }
+
+  const TONE_IDLE_MS = 120000;      // sin tocar nada eligiendo el tono: volver al inicio
+  const PREVIEW_IDLE_MS = 180000;   // el retrato listo sin confirmar: volver al inicio
+  const RESULT_HOLD_MS = 150000;    // el QR queda a la vista este tiempo
+  const IDLE_AFTER_TEST_MS = 5000;  // dibujos que no se comparten (pruebas): volver al inicio
+
+  // lo que pasa en esta pantalla antes de mandar la foto (el resto lo dice el servidor)
+  let local = null;                 // 'camera' | 'tone' | 'sending' | null
+  let photoBlob = null, photoUrl = null, color = null;
+  let kiosk = null, live = null, liveId = null, testDoneAt = null;
+  let stream = null;
+
+  async function api(path, method, body) {
+    const res = await fetch(path, { method: method || 'GET', body, cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('Error ' + res.status));
+    return data;
+  }
+
+  function fmt(sec) {
+    sec = Math.max(0, Math.round(sec));
+    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  }
+
+  // --- 1. foto --------------------------------------------------------------
+  // getUserMedia solo existe en https o en localhost: si no esta (o no hay
+  // permiso), se usa el selector de archivos, que en celulares y tabletas abre
+  // la camara (capture="user").
+  const canStream = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+  $('start').addEventListener('click', async () => {
+    $('start-note').textContent = '';
+    if (!canStream) { $('file').click(); return; }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
+      $('video').srcObject = stream;
+      await $('video').play();
+      local = 'camera'; $('shutter').disabled = false; $('count').textContent = '';
+      render();
+    } catch (err) {
+      stopCamera();
+      $('start-note').textContent = 'No pudimos abrir la cámara. Podés elegir una foto.';
+      $('pick').hidden = false;
+    }
+  });
+
+  function stopCamera() {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    $('video').srcObject = null;
+  }
+
+  $('cam-back').addEventListener('click', () => { stopCamera(); local = null; render(); });
+
+  $('shutter').addEventListener('click', () => {
+    $('shutter').disabled = true;
+    let n = 3;
+    const tick = () => {
+      if (local !== 'camera') return;
+      if (n > 0) {
+        $('count').innerHTML = '<span>' + n + '</span>';
+        n -= 1;
+        setTimeout(tick, 1000);
+        return;
+      }
+      $('count').textContent = '';
+      const v = $('video');
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      c.getContext('2d').drawImage(v, 0, 0);
+      $('flash').classList.remove('go'); void $('flash').offsetWidth; $('flash').classList.add('go');
+      c.toBlob((blob) => {
+        stopCamera();
+        setPhoto(blob);
+      }, 'image/jpeg', 0.92);
+    };
+    tick();
+  });
+
+  $('file').addEventListener('change', () => {
+    const f = $('file').files[0];
+    $('file').value = '';
+    if (f) setPhoto(f);
+  });
+
+  function setPhoto(blob) {
+    photoBlob = blob;
+    if (photoUrl) URL.revokeObjectURL(photoUrl);
+    photoUrl = URL.createObjectURL(blob);
+    $('photo').src = photoUrl;
+    $('tone-note').textContent = '';
+    $('send').disabled = false;
+    local = 'tone';
+    render();
+  }
+
+  // --- 2. tono --------------------------------------------------------------
+  function buildTones() {
+    const box = $('tones');
+    if (box.childElementCount || !kiosk) return;
+    color = color || kiosk.default_color;
+    kiosk.colors.forEach((c) => {
+      const b = document.createElement('button');
+      b.className = 'tone';
+      b.dataset.id = c.id;
+      b.innerHTML = '<svg viewBox="0 0 120 40" aria-hidden="true"><path stroke="' + c.hex +
+        '" d="M6 28 C 22 6, 34 6, 42 22 S 62 38, 72 20 S 92 4, 114 18"/></svg>';
+      b.appendChild(document.createTextNode(c.name));
+      b.addEventListener('click', () => { color = c.id; shownAt = Date.now(); markTone(); });
+      box.appendChild(b);
+    });
+    markTone();
+  }
+  function markTone() {
+    $('tones').querySelectorAll('.tone').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.id === color)));
+  }
+
+  $('retake').addEventListener('click', () => { local = null; photoBlob = null; render(); $('start').click(); });
+
+  $('send').addEventListener('click', async () => {
+    if (!photoBlob) return;
+    $('send').disabled = true;
+    $('tone-note').textContent = '';
+    const form = new FormData();
+    form.append('image', photoBlob, 'foto.jpg');
+    form.append('color', color || '');
+    local = 'sending';
+    $('making-photo').src = photoUrl;
+    render();
+    try {
+      kiosk = await api('/api/kiosk', 'POST', form);
+      local = null;
+    } catch (err) {
+      local = 'tone';
+      $('send').disabled = false;
+      $('tone-note').textContent = err.message;
+    }
+    render();
+  });
+
+  // --- 3. confirmar / volver a empezar --------------------------------------
+  $('draw').addEventListener('click', async () => {
+    $('draw').disabled = true;
+    $('preview-note').textContent = '';
+    try {
+      kiosk = await api('/api/kiosk/draw', 'POST');
+    } catch (err) {
+      $('preview-note').textContent = err.message;
+    }
+    $('draw').disabled = false;
+    render();
+  });
+
+  async function reset() {
+    local = null; photoBlob = null;
+    try { kiosk = await api('/api/kiosk/reset', 'POST'); } catch (err) { /* se reintenta al volver a tocar */ }
+    render();
+  }
+  $('again').addEventListener('click', reset);
+  $('error-retry').addEventListener('click', reset);
+  $('next').addEventListener('click', reset);
+
+  // --- resultado (igual que antes) --------------------------------------------
+  function renderResult(d) {
+    const r = d.result || {};
+    if (r.image_url && $('portrait').getAttribute('src') !== r.image_url) $('portrait').src = r.image_url;
+    // descarga directa de la imagen (desde este servidor: no depende de que se haya subido)
+    if (r.image_url && $('download').getAttribute('href') !== r.image_url) {
+      $('download').href = r.image_url;
+      $('download').download = 'retrato-' + new Date().toISOString().slice(0, 10) + '.png';
+      prepareShare(r.image_url, $('download').download);
+    }
+    $('download').hidden = !r.image_url;
+    $('caption').textContent = new Date().toLocaleDateString('es', { day: 'numeric', month: 'long', year: 'numeric' });
+    if (r.status === 'ready') {
+      if ($('qr').getAttribute('src') !== r.qr_url) {
+        $('qr').onload = () => { $('qr').hidden = false; $('qrcard').classList.remove('wait'); };
+        $('qr').src = r.qr_url;
+      }
+      $('kicker').textContent = 'Llevate tu retrato';
+      $('title').textContent = PHONE.matches ? 'Descargalo o escaneá el código' : 'Escaneá el código con tu celular';
+      $('title').classList.remove('err');
+      $('steps').hidden = false;
+    } else if (r.status === 'error') {
+      $('qr').hidden = true; $('qrcard').hidden = true;
+      $('kicker').textContent = 'Tu retrato';
+      $('title').textContent = 'No pudimos preparar la descarga';
+      $('title').classList.add('err');
+      $('steps').hidden = true;
+    } else {
+      $('qr').hidden = true; $('qrcard').hidden = false; $('qrcard').classList.add('wait');
+      $('kicker').textContent = '¡Listo!';
+      $('title').textContent = 'Preparando tu descarga…';
+      $('title').classList.remove('err');
+      $('steps').hidden = true;
+    }
+  }
+
+  // En el celular (solo con https: el navegador no deja compartir en http) el
+  // boton abre "compartir", que permite guardar la imagen en la galeria; si no,
+  // es una descarga comun. La imagen se baja antes: compartir tiene que pasar
+  // en el mismo toque, sin esperas.
+  const PHONE = window.matchMedia('(max-width: 600px)');
+  let shareFile = null;
+  async function prepareShare(url, name) {
+    shareFile = null;
+    if (!window.isSecureContext || !navigator.canShare) return;
+    try {
+      const blob = await (await fetch(url)).blob();
+      const file = new File([blob], name, { type: 'image/png' });
+      if (navigator.canShare({ files: [file] })) shareFile = file;
+    } catch (e) { /* queda la descarga comun */ }
+  }
+  $('download').addEventListener('click', (ev) => {
+    if (!shareFile || !PHONE.matches) return;   // descarga comun
+    ev.preventDefault();
+    navigator.share({ files: [shareFile], title: 'Mi retrato' }).catch(() => {});
+  });
+
+  function resetResult() {
+    shareFile = null;
+    $('download').hidden = true; $('download').removeAttribute('href');
+    $('portrait').removeAttribute('src');
+    $('qr').removeAttribute('src'); $('qr').hidden = true;
+    $('qrcard').hidden = false; $('qrcard').classList.add('wait');
+  }
+
+  function setChecks(stage) {
+    const order = ['ck-photo', 'ck-sketch', 'ck-path'];
+    const at = stage === 'building_gcode' ? 2 : (stage === 'sketching' || stage === 'uploaded') ? 1 : 0;
+    order.forEach((id, i) => { $(id).className = i < at ? 'done' : i === at ? 'doing' : ''; });
+  }
+
+  // --- que pantalla va ---------------------------------------------------------
+  function render() {
+    if (kiosk) buildTones();
+    if (local === 'camera') return show('s-camera');
+    if (local === 'tone') {
+      if (Date.now() - shownAt > TONE_IDLE_MS && current === 's-tone') { local = null; photoBlob = null; }
+      else return show('s-tone');
+    }
+    if (local === 'sending') { setChecks(null); return show('s-making'); }
+
+    const job = kiosk && kiosk.job;
+    const drawing = live && live.id && !live.done;
+    if (drawing || (job && job.stage === 'drawing')) {
+      const total = Math.max(1, ((live && live.total) || 1) - 1);
+      const frac = drawing ? Math.min(1, (live.reveal || 0) / total) : 0;
+      $('bar').style.width = (frac * 100).toFixed(1) + '%';
+      $('pct').textContent = Math.round(frac * 100) + '%';
+      $('elapsed').textContent = drawing && live.elapsed != null ? fmt(live.elapsed) : '0:00';
+      return show('s-drawing');
+    }
+    if (job && ['uploaded', 'sketching', 'building_gcode'].includes(job.stage)) {
+      if (job.original_url && $('making-photo').getAttribute('src') !== job.original_url &&
+          !($('making-photo').src || '').startsWith('blob:')) $('making-photo').src = job.original_url;
+      setChecks(job.stage);
+      return show('s-making');
+    }
+    if (job && job.stage === 'gcode_ready') {
+      if (job.preview_url && $('preview').getAttribute('src') !== job.preview_url) $('preview').src = job.preview_url;
+      if (current === 's-preview' && Date.now() - shownAt > PREVIEW_IDLE_MS) { reset(); return; }
+      return show('s-preview');
+    }
+    if (job && ['sketch_failed', 'kiosk_failed', 'error'].includes(job.stage)) {
+      $('error-text').textContent = 'Probemos con otra foto.' + (job.error ? ' (' + job.error.slice(0, 140) + ')' : '');
+      return show('s-error');
+    }
+    if (live && live.id && live.done && live.share && live.result && live.id !== (kiosk && kiosk.dismissed_live)) {
+      renderResult(live);
+      if (current === 's-result' && Date.now() - shownAt > RESULT_HOLD_MS) { reset(); return; }
+      return show('s-result');
+    }
+    if (live && live.id && live.done && !live.share && testDoneAt && Date.now() - testDoneAt < IDLE_AFTER_TEST_MS) return;
+    show('s-start');
+  }
+
+  async function poll() {
+    try {
+      const [l, k] = await Promise.all([
+        fetch('/api/live' + (liveId ? '?have=' + liveId : ''), { cache: 'no-store' }).then((r) => r.json()),
+        fetch('/api/kiosk', { cache: 'no-store' }).then((r) => r.json()),
+      ]);
+      if (l.id !== liveId) { liveId = l.id; resetResult(); testDoneAt = null; }
+      if (l.done && !l.share && !testDoneAt) testDoneAt = Date.now();
+      live = l;
+      if (local !== 'sending') kiosk = k;
+      render();
+    } catch (e) { /* sin conexion: se reintenta */ }
+    setTimeout(poll, 600);
+  }
+  poll();
+})();
+</script>
+</body>
+</html>

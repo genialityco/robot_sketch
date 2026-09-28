@@ -32,10 +32,26 @@ GEMINI_LINE_ART_PROMPT = (
     "garabatos. el rostro centrado y de frente, sin accesorios como gafas"
 )
 
+# Estilo "dibujo a lapiz" (para la tableta, ver retrato_lapiz.py): un dibujo
+# de lineas sin sombras, mas detallado que "trazo simple". De ahi sale el
+# recorrido del brazo, y la tableta dibuja exactamente esas lineas.
+GEMINI_PENCIL_PROMPT = (
+    "convierte la foto de esta persona en un dibujo a lapiz de lineas, realista y detallado: el contorno "
+    "de la cara, las orejas, los mechones del cabello, el cuello, los hombros y los pliegues principales de "
+    "la ropa. los rasgos con mucho detalle: ojos con parpado superior e inferior, iris redondo con la pupila "
+    "y un brillo, pestanas marcadas y cejas con la direccion del pelo; nariz con el puente, las aletas y las "
+    "dos fosas nasales; boca con el contorno de ambos labios, el arco del labio superior, la linea entre los "
+    "labios y las comisuras. solo lineas de grafito "
+    "limpias y continuas, del mismo grosor, sin sombreado, sin rellenos, sin tramado ni degradados. fondo "
+    "completamente blanco. solo cabeza y hombros, centrado y de frente. conserva fielmente los rasgos, la "
+    "expresion, las gafas y el peinado de la persona. sin color, sin texto, sin marco ni firma"
+)
+
 # estilo -> (nombre para la interfaz, prompt)
 STYLES = {
     'detallado': ('Detallado (boceto normal)', GEMINI_SKETCH_PROMPT),
     'trazo': ('Trazo simple (lineas largas, mas facil de dibujar)', GEMINI_LINE_ART_PROMPT),
+    'lapiz': ('Dibujo a lapiz de lineas, detallado (para la tableta)', GEMINI_PENCIL_PROMPT),
 }
 DEFAULT_STYLE = 'detallado'
 

@@ -148,4 +148,18 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .fields label { flex: 1 1 180px; }
 .fields label.check { display: flex; align-items: center; gap: 6px; align-self: end; padding-bottom: 6px; }
 .fields label.check input { width: auto; }
+.conn-grid { display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 14px; }
+.conn-card { border: 1px solid #ddd; border-radius: 8px; padding: 10px; background: #fff; text-align: center; width: 190px; }
+.conn-card img { width: 150px; height: 150px; display: block; margin: 6px auto; }
+.conn-card .name { font-weight: 600; font-size: 13px; }
+.conn-card code { font-size: 12px; word-break: break-all; }
+.conn-ip { width: 100%; font-size: 13px; color: #555; margin-top: 4px; }
 #cal-view progress { margin-top: 8px; }
+.rt-steps { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.rt-step { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.rt-step.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.rt-step .num { font-weight: 600; min-width: 52px; }
+.rt-step .angles { flex: 1 1 240px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--muted); }
+.rt-step label { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 13px; }
+.rt-step input { width: 64px; padding: 4px 6px; font-size: 14px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
+.rt-step button { padding: 5px 9px; font-size: 13px; }

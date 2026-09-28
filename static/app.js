@@ -71,7 +71,7 @@
           cropSyncedFor = job.sketch_url;
         }
         renderCrop();
-        el('sketch-status').textContent = '';
+        el('sketch-status').textContent = job.sketch_note || '';
         el('sketch-error').textContent = '';
         el('btn-sketch-accept').disabled = false;
         el('btn-sketch-reject').disabled = false;
@@ -153,7 +153,10 @@
     return (stats.style ? stats.style + ': ' : '') + stats.strokes + ' trazos, ' + stats.points + ' puntos, ' +
       stats.draw_mm + ' mm de dibujo, ' + stats.travel_mm + ' mm de viaje ' +
       '(~' + stats.estimated_minutes + ' min estimado, área ' +
-      stats.area_mm[0] + '×' + stats.area_mm[1] + ' mm)' + (stats.eyes ? '. ' + stats.eyes[0].toUpperCase() +
+      stats.area_mm[0] + '×' + stats.area_mm[1] + ' mm)' +
+      (stats.pencil ? '. ' + stats.pencil[0].toUpperCase() + stats.pencil.slice(1) : '') +
+      (stats.short_dropped ? '. Se omitieron ' + stats.short_dropped + ' rayas de menos de ' + stats.min_stroke_mm + ' mm' : '') +
+      (stats.eyes ? '. ' + stats.eyes[0].toUpperCase() +
         stats.eyes.slice(1) + '.' : '');
   }
 

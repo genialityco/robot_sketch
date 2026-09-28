@@ -180,6 +180,9 @@
     el('cal-lift').value = profile.pen_lift_mm;
     el('cal-backlash').value = profile.j1_backlash_deg || 0;
     el('cal-unidir').checked = !!profile.j1_unidirectional;
+    el('cal-tablet-mode').checked = !!profile.tablet_mode;
+    el('cal-tablet-orient').value = profile.tablet_orient || '';
+    el('cal-j1-direction').value = String(profile.j1_direction || 1);
     el('cal-rotation').value = String(profile.drawing_rotation_resolved);
     el('cal-rotation-info').textContent = 'El preview muestra la hoja con las esquinas "arriba" hacia arriba, ' +
       'como la ves al medirla. Girá el dibujo solo si querés la cabeza hacia otro lado de la hoja.';
@@ -228,7 +231,7 @@
       const p = t.progress || { i: 0, total: 1 };
       prog.value = p.total ? Math.round((100 * p.i) / p.total) : 0;
       el('cal-test-message').textContent = ({ outline: 'Dibujando contorno', pattern: 'Dibujando patrón',
-        face: 'Dibujando rostro', eyes: 'Dibujando prueba de ojos', precision: 'Midiendo precisión' }[t.kind] || 'Probando') +
+        face: 'Dibujando rostro', eyes: 'Dibujando prueba de ojos', dots: 'Dibujando ojo de puntos', stipple: 'Dibujando rostro con puntos', precision: 'Midiendo precisión' }[t.kind] || 'Probando') +
         '… ' + (t.message || '') + (t.progress ? ' (' + t.progress.i + '/' + t.progress.total + ')' : '');
     } else {
       prog.classList.add('hidden');
@@ -243,20 +246,77 @@
           (t.log ? ' Registro: ' + t.log : ''));
     }
     const robotBusy = !!r.busy;
+    renderRoutines();
     document.querySelectorAll('#cal-view button').forEach((b) => {
-      if (!['cal-new', 'cal-save', 'cal-delete', 'cal-center-clear'].includes(b.id)) b.disabled = robotBusy;
+      if (!['cal-new', 'cal-save', 'cal-delete', 'cal-center-clear', 'rt-new', 'rt-rename', 'rt-delete', 'rt-stop'].includes(b.id)) {
+        b.disabled = robotBusy || !!b.dataset.fixedDisabled;
+      }
     });
+    el('rt-stop').disabled = !robotBusy && !(state.routine_task || {}).running;   // frena una rutina o un "Ir" en curso
     const isActive = state.profile && state.profile.id === state.active_id;
     el('cal-test-outline').disabled = robotBusy || !isActive;
     el('cal-test-pattern').disabled = robotBusy || !isActive;
     el('cal-test-face').disabled = robotBusy || !isActive;
     el('cal-test-eyes').disabled = robotBusy || !isActive;
+    el('cal-test-dots').disabled = robotBusy || !isActive;
+    el('cal-test-stipple').disabled = robotBusy || !isActive || !state.stipple;
+    const sp = state.stipple;
+    el('cal-stipple-img').classList.toggle('hidden', !sp);
+    if (sp) {
+      if (el('cal-stipple-img').getAttribute('src') !== sp.preview_url) el('cal-stipple-img').src = sp.preview_url;
+      el('cal-stipple-info').textContent = sp.dots + ' puntos (' + sp.method + ', ' + sp.bands + ' bandas), de ' + sp.source +
+        (sp.found ? '' : ' (no se detectó una cara: se usó el centro de la foto)') +
+        '. Dibujarlo lleva unos ' + sp.estimated_minutes + ' min.';
+    }
     el('cal-test-precision').disabled = robotBusy || !isActive;
     el('cal-activate').disabled = robotBusy || isActive;
     el('cal-delete').disabled = isActive;
     const activeName = (state.profiles.find((p) => p.id === state.active_id) || {}).name || '—';
     el('cal-test-inactive').textContent = isActive ? '' : 'Estás viendo otro perfil: las pruebas usan el ' +
       'activo (' + activeName + '). Tocá "Usar este perfil" para probar este.';
+  }
+
+  // direcciones de /tablet y /resultado con su QR (la IP cambia con la red)
+  async function loadConnection() {
+    const box = el('cal-conn');
+    try {
+      const res = await fetch('/api/connection', { cache: 'no-store' });
+      const data = await res.json();
+      box.innerHTML = '';
+      if (!data.addresses.length) {
+        box.textContent = 'No se encontró una red: conectá esta PC a un Wi-Fi o a un hotspot.';
+        return;
+      }
+      data.addresses.forEach((a) => {
+        const ip = document.createElement('div');
+        ip.className = 'conn-ip';
+        ip.textContent = 'Red ' + a.ip + (a.hotspot ? ' (zona con cobertura de esta PC)' : '');
+        box.appendChild(ip);
+        a.pages.forEach((p) => {
+          const card = document.createElement('div');
+          card.className = 'conn-card';
+          const name = document.createElement('div');
+          name.className = 'name';
+          name.textContent = p.name;
+          const img = document.createElement('img');
+          img.alt = 'QR para abrir ' + p.url;
+          img.src = '/api/connection/qr.svg?url=' + encodeURIComponent(p.url);
+          const code = document.createElement('code');
+          code.textContent = p.url;
+          card.append(name, img, code);
+          box.appendChild(card);
+        });
+      });
+    } catch (err) {
+      box.textContent = 'No se pudieron obtener las direcciones: ' + err.message;
+    }
+  }
+  el('cal-conn-refresh').addEventListener('click', loadConnection);
+  loadConnection();
+
+  function renderTablet() {
+    const input = el('cal-tablet-line');
+    if (document.activeElement !== input) input.value = state.tablet_line_mm;
   }
 
   function renderEyeStyles() {
@@ -270,6 +330,7 @@
 
   function renderProfiles() {
     renderEyeStyles();
+    renderTablet();
     const sel = el('cal-profile');
     sel.innerHTML = '';
     state.profiles.forEach((p) => {
@@ -307,7 +368,7 @@
       renderDiagnostics(state.profile);
     }
     renderStatus();
-    if (state.task.running || state.robot.busy) startPolling(); else stopPolling();
+    if (state.task.running || state.robot.busy || (state.routine_task || {}).running) startPolling(); else stopPolling();
   }
 
   async function refresh(profileId, refillForm) {
@@ -351,6 +412,9 @@
       pen_lift_mm: Number(el('cal-lift').value),
       j1_backlash_deg: Number(el('cal-backlash').value || 0),
       j1_unidirectional: el('cal-unidir').checked,
+      tablet_mode: el('cal-tablet-mode').checked,
+      tablet_orient: el('cal-tablet-orient').value || null,
+      j1_direction: Number(el('cal-j1-direction').value),
       drawing_rotation: el('cal-rotation').value,
       center_z: el('cal-center-z').value === '' ? null : Number(el('cal-center-z').value),
       center_xy: el('cal-center-x').value === '' || el('cal-center-y').value === '' ? null :
@@ -396,6 +460,9 @@
 
   ['cal-name', 'cal-skew', 'cal-lift', 'cal-backlash', 'cal-rotation'].forEach((id) => el(id).addEventListener('input', markDirty));
   el('cal-unidir').addEventListener('change', markDirty);
+  el('cal-tablet-mode').addEventListener('change', markDirty);
+  el('cal-tablet-orient').addEventListener('change', markDirty);
+  el('cal-j1-direction').addEventListener('change', markDirty);
 
   // --- Esquinas ------------------------------------------------------------
   function labelOf(corner) {
@@ -504,12 +571,186 @@
   el('cal-test-pattern').addEventListener('click', testAction('pattern', 'patrón de prueba'));
   el('cal-test-face').addEventListener('click', testAction('face', 'rostro de prueba'));
   el('cal-test-eyes').addEventListener('click', testAction('eyes', 'prueba de ojos (todos los estilos, numerados)'));
+  el('cal-test-dots').addEventListener('click', testAction('dots', 'ojo grande hecho solo de puntos (varios minutos)'));
+  el('cal-test-stipple').addEventListener('click', testAction('stipple', 'rostro con puntos de la vista previa (varios minutos)'));
+  el('cal-stipple-preview').addEventListener('click', () => run(async () => {
+    const form = new FormData();
+    const file = el('cal-stipple-file').files[0];
+    if (file) form.append('image', file);
+    form.append('dots', el('cal-stipple-dots').value);
+    form.append('method', el('cal-stipple-method').value);
+    el('cal-stipple-info').textContent = 'Generando…';
+    const res = await fetch('/api/calibration/stipple?profile=' + encodeURIComponent(selectedId), { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) {
+      el('cal-stipple-info').textContent = '';
+      throw new Error(data.error || ('error ' + res.status));
+    }
+    apply(data, false);
+  }));
+  el('cal-tablet-line').addEventListener('change', () => run(async () => {
+    apply(await api('/api/drawing-settings?profile=' + encodeURIComponent(selectedId), 'POST',
+      { tablet_line_mm: Number(el('cal-tablet-line').value) }), false);
+    el('cal-test-message').textContent = 'Grosor de la tableta: ' + state.tablet_line_mm + ' mm.';
+  }));
   el('cal-eye-style').addEventListener('change', () => run(async () => {
     apply(await api('/api/drawing-settings?profile=' + encodeURIComponent(selectedId), 'POST',
       { eye_style: el('cal-eye-style').value || null }), false);
     el('cal-test-message').textContent = 'Estilo de ojos guardado: se usa en los retratos que generes desde ahora.';
   }));
   el('cal-test-precision').addEventListener('click', testAction('precision', 'crucecitas de la prueba de precisión'));
+
+  // --- Rutinas de movimiento -------------------------------------------------
+  let routineId = null;
+  let stepsDrawn = null;   // lo ultimo dibujado en la lista (para no pisar lo que se esta editando)
+
+  function currentRoutine() {
+    return (state.routines || []).find((r) => r.id === routineId) || null;
+  }
+
+  function routineUrl(suffix) {
+    return '/api/routines/' + encodeURIComponent(routineId) + (suffix || '');
+  }
+
+  // las respuestas de /api/routines traen solo las rutinas: se mezclan con el estado
+  function applyRoutines(data) {
+    apply(Object.assign({}, state, { routines: data.routines, routine_task: data.routine_task }), false);
+  }
+
+  function renderRoutines() {
+    const list = state.routines || [];
+    if (!list.some((r) => r.id === routineId)) routineId = list.length ? list[0].id : null;
+    const sel = el('rt-select');
+    const opts = list.map((r) => r.id + '\u0000' + r.name + ' (' + r.steps.length + ')').join('\u0001');
+    if (sel.dataset.opts !== opts) {
+      sel.innerHTML = '';
+      list.forEach((r) => sel.appendChild(new Option(r.name + ' (' + r.steps.length +
+        (r.steps.length === 1 ? ' paso)' : ' pasos)'), r.id)));
+      sel.dataset.opts = opts;
+    }
+    sel.value = routineId || '';
+
+    const routine = currentRoutine();
+    const t = state.routine_task || {};
+    const playing = t.running && t.id === routineId;
+    const box = el('rt-steps');
+    const key = JSON.stringify([routineId, routine ? routine.steps : null]);
+    if (key !== stepsDrawn && !box.contains(document.activeElement)) {
+      stepsDrawn = key;
+      box.innerHTML = '';
+      (routine ? routine.steps : []).forEach((step, i) => box.appendChild(stepRow(step, i, routine.steps.length)));
+    }
+    box.querySelectorAll('.rt-step').forEach((li, i) =>
+      li.classList.toggle('current', !!playing && t.step === i + 1));
+    el('rt-empty').textContent = !routine ? 'No hay rutinas: creá una con "Nueva rutina".' :
+      routine.steps.length ? '' : 'Esta rutina todavía no tiene pasos.';
+
+    el('rt-message').textContent = t.running ? 'Ejecutando "' + t.name + '"… ' + (t.message || '') :
+      t.error ? 'La rutina "' + t.name + '" falló: ' + t.error :
+      t.message === 'detenido' ? 'Rutina "' + t.name + '" detenida: el brazo quedó donde estaba.' :
+      t.message === 'terminado' ? 'Rutina "' + t.name + '" terminada.' : '';
+  }
+
+  function stepRow(step, i, total) {
+    const li = document.createElement('li');
+    li.className = 'rt-step';
+    const num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = 'Paso ' + (i + 1);
+    const angles = document.createElement('span');
+    angles.className = 'angles';
+    angles.textContent = step.angles.map((a, j) => 'J' + (j + 1) + ' ' + a.toFixed(1) + '°').join('  ');
+    const field = (label, key, attrs) => {
+      const lab = document.createElement('label');
+      lab.textContent = label + ' ';
+      const input = document.createElement('input');
+      input.type = 'number';
+      Object.assign(input, attrs);
+      input.value = step[key];
+      input.addEventListener('change', () => editSteps((steps) => { steps[i][key] = Number(input.value); }));
+      lab.appendChild(input);
+      return lab;
+    };
+    const button = (text, title, fn, disabled) => {
+      const b = document.createElement('button');
+      b.className = 'secondary';
+      b.textContent = text;
+      b.title = title;
+      b.disabled = !!disabled;
+      b.dataset.fixedDisabled = disabled ? '1' : '';
+      b.addEventListener('click', () => run(fn));
+      return b;
+    };
+    li.append(num, angles,
+      field('Velocidad', 'speed', { min: 1, max: 100, step: 1, title: 'Velocidad para llegar a esta pose (1 a 100)' }),
+      field('Pausa (s)', 'pause_s', { min: 0, max: 30, step: 0.1, title: 'Cuánto se queda en esta pose antes de seguir' }),
+      button('Ir', 'Trabar el brazo y llevarlo a esta pose', async () => {
+        startPolling();   // mientras va, el estado muestra el brazo ocupado y habilita "Detener"
+        applyRoutines(await api(routineUrl('/goto/' + i), 'POST'));
+      }),
+      button('Reemplazar', 'Guardar la posición actual del brazo en este paso', async () => {
+        if (!confirm('¿Reemplazar el paso ' + (i + 1) + ' por la posición actual del brazo?')) return;
+        applyRoutines(await api(routineUrl('/capture'), 'POST', { index: i }));
+      }),
+      button('↑', 'Subir', () => editSteps((s) => s.splice(i - 1, 0, s.splice(i, 1)[0])), i === 0),
+      button('↓', 'Bajar', () => editSteps((s) => s.splice(i + 1, 0, s.splice(i, 1)[0])), i === total - 1),
+      button('Borrar', 'Borrar este paso', async () => {
+        if (!confirm('¿Borrar el paso ' + (i + 1) + '?')) return;
+        await editSteps((s) => s.splice(i, 1));
+      }));
+    return li;
+  }
+
+  async function editSteps(change) {
+    const steps = JSON.parse(JSON.stringify(currentRoutine().steps));
+    change(steps);
+    stepsDrawn = null;
+    try {
+      applyRoutines(await api(routineUrl(), 'PUT', { steps }));
+    } catch (err) {
+      renderRoutines();   // vuelve a mostrar lo guardado
+      throw err;
+    }
+  }
+
+  el('rt-select').addEventListener('change', () => { routineId = el('rt-select').value; renderRoutines(); });
+  el('rt-new').addEventListener('click', () => run(async () => {
+    const name = prompt('Nombre de la rutina nueva (por ejemplo: Despedida):');
+    if (!name || !name.trim()) return;
+    const data = await api('/api/routines', 'POST', { name: name.trim() });
+    routineId = data.created;
+    applyRoutines(data);
+  }));
+  el('rt-rename').addEventListener('click', () => run(async () => {
+    const routine = currentRoutine();
+    if (!routine) return;
+    const name = prompt('Nuevo nombre de la rutina:', routine.name);
+    if (!name || !name.trim()) return;
+    applyRoutines(await api(routineUrl(), 'PUT', { name: name.trim() }));
+  }));
+  el('rt-delete').addEventListener('click', () => run(async () => {
+    const routine = currentRoutine();
+    if (!routine || !confirm('¿Borrar la rutina "' + routine.name + '" con sus ' + routine.steps.length + ' pasos?')) return;
+    applyRoutines(await api(routineUrl(), 'DELETE'));
+  }));
+  el('rt-release').addEventListener('click', robotAction('release', 'Brazo liberado: llevalo a la pose y tocá "Agregar posición actual".'));
+  el('rt-lock').addEventListener('click', robotAction('lock', 'Brazo trabado.'));
+  el('rt-capture').addEventListener('click', () => run(async () => {
+    if (!routineId) throw new Error('Primero creá o elegí una rutina.');
+    const data = await api(routineUrl('/capture'), 'POST', {});
+    applyRoutines(data);
+    el('rt-message').textContent = 'Paso ' + currentRoutine().steps.length + ' agregado: ' +
+      data.captured.map((a, j) => 'J' + (j + 1) + ' ' + a.toFixed(1) + '°').join('  ');
+  }));
+  el('rt-play').addEventListener('click', () => run(async () => {
+    const routine = currentRoutine();
+    if (!routine) return;
+    if (!confirm('El brazo se va a trabar y a ejecutar "' + routine.name + '". ¿Está libre el espacio alrededor?')) return;
+    applyRoutines(await api(routineUrl('/play'), 'POST', { repeat: Number(el('rt-repeat').value || 1) }));
+  }));
+  el('rt-stop').addEventListener('click', () => run(async () => {
+    applyRoutines(await api('/api/routines/stop', 'POST'));
+  }));
 
   // nombre del perfil activo en el encabezado, tambien en la pestaña Dibujar
   refresh(null, true);

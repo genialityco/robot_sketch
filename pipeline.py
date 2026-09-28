@@ -371,9 +371,12 @@ def _landmark_bbox_flipped(landmark_strokes, img_height):
 # sacar el ojo del boceto).
 _EYE_LANDMARKS = [
     dict(inner=133, outer=33, upper=159, lower=145, iris=468, ring=(469, 470, 471, 472),
-         brow=(46, 53, 52, 65, 55)),
+         brow=(46, 53, 52, 65, 55),
+         # borde del ojo abierto, en orden (parpado de arriba y despues el de abajo)
+         contour=(33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7)),
     dict(inner=362, outer=263, upper=386, lower=374, iris=473, ring=(474, 475, 476, 477),
-         brow=(276, 283, 282, 295, 285)),
+         brow=(276, 283, 282, 295, 285),
+         contour=(263, 466, 388, 387, 386, 385, 384, 398, 362, 382, 381, 380, 374, 373, 390, 249)),
 ]
 _NOSE_TIP = 1
 
@@ -410,7 +413,8 @@ def eyes_from_landmarks(points, img_height):
         brow_c = (sum(p[0] for p in brow) / len(brow), sum(p[1] for p in brow) / len(brow))
         eyes.append(dict(inner=inner, outer=outer, center=center, width=width, params=params,
                          up_hint=(center[0] - nose[0], center[1] - nose[1]),
-                         brow_dist=math.dist(center, brow_c)))
+                         brow_dist=math.dist(center, brow_c), iris_c=iris_c, iris_r=iris_r,
+                         contour=[P(i) for i in idx['contour']]))
     return eyes
 
 
@@ -493,6 +497,8 @@ LINE_ART_LEVELS = {
     'bajo': dict(smooth_px=3.0, min_len_mm=8.0),
     'medio': dict(smooth_px=2.0, min_len_mm=5.0),
     'alto': dict(smooth_px=1.2, min_len_mm=2.5),
+    # dibujo a lapiz de lineas para la tableta (retrato_lapiz.py): mas detalle
+    'lapiz': dict(smooth_px=1.0, min_len_mm=2.0),
 }
 LINE_ART_STEP_MM = 1.5   # paso entre puntos en el papel (ver MIN_SAFE_STEP_MM)
 
@@ -561,6 +567,35 @@ def _split_small_loops(strokes, mm_per_px):
         far = int(np.argmax(np.hypot(*(loop - loop[0]).T)))   # la punta opuesta
         out += [loop[:far + 1], loop[far:]]
     return out
+
+
+# Ningun trazo mas corto que esto (mm en el papel) llega al robot, en ningun
+# estilo ni nivel de detalle. simplify_for_robot afloja su minimo en la zona de
+# la cara para no perder rasgos, y dejaba rayitas de 0.3-2 mm (5 a 16 por
+# retrato debajo de 4 mm): cada una es una bajada de pluma entera que en el
+# papel sale como un punto o un gancho. Los ojos de eye_styles se agregan
+# despues y no pasan por aca (la pupila es un punto a proposito).
+MIN_DRAWN_STROKE_MM = 4.0
+
+
+def drop_short_strokes(moves, rotation_deg=0, min_mm=MIN_DRAWN_STROKE_MM):
+    """Saca los trazos (tramos seguidos con la pluma abajo) mas cortos que
+    min_mm en el papel. Devuelve (moves, cuantos se sacaron)."""
+    if not moves or min_mm <= 0:
+        return moves, 0
+    scale = _px_to_mm_scale(moves, rotation_deg)
+    strokes, cur = [], []
+    for x, y, pen_down in moves:
+        if not pen_down:
+            if cur:
+                strokes.append(cur)
+            cur = []
+        else:
+            cur.append((x, y))
+    if cur:
+        strokes.append(cur)
+    keep = [s for s in strokes if sum(math.dist(a, b) for a, b in zip(s, s[1:])) * scale >= min_mm]
+    return _flat_strokes_to_moves(keep), len(strokes) - len(keep)
 
 
 def image_to_raw_moves(sketch_path, invert=False, threshold=None, min_len_px=SKETCH_MIN_LEN_PX,
@@ -896,7 +931,7 @@ def simplify_for_robot(moves, simplify_target_mm=SIMPLIFY_TARGET_MM,
 # ---------------------------------------------------------------------------
 # 2. Preview (sin conectar al robot)
 # ---------------------------------------------------------------------------
-def render_preview(moves, out_path, preserve_aspect=True):
+def render_preview(moves, out_path, preserve_aspect=True, bounds=None):
     """
     Dibuja un preview (PNG) del trazo como va a quedar SOBRE LA HOJA, con
     "arriba" = el lado de las esquinas "arriba" del perfil de calibracion
@@ -923,9 +958,8 @@ def render_preview(moves, out_path, preserve_aspect=True):
     prev_pen_down = None
 
     # mismo plan que draw(): el preview muestra los tramos cortados y las entradas por el aire
-    bounds = None
     if j1u.ENABLED:
-        moves, bounds = j1u.plan(moves, preserve_aspect)
+        moves, bounds = j1u.plan(moves, preserve_aspect, bounds)
     robot_pts = lib.iter_target_coords(moves, preserve_aspect=preserve_aspect, bounds=bounds)
     sheet_pts = lib.iter_sheet_uv(moves, preserve_aspect=preserve_aspect, bounds=bounds)
     for (_i, _t, _x, _y, pen_down, coords), (_i2, _t2, _x2, _y2, _pd, u, v) in zip(robot_pts, sheet_pts):
@@ -975,7 +1009,8 @@ def render_preview(moves, out_path, preserve_aspect=True):
 # ---------------------------------------------------------------------------
 # 3. Dibujar de verdad
 # ---------------------------------------------------------------------------
-def draw(mc, moves, progress_cb=None, preserve_aspect=True, bounds=None, check_every=25, unidirectional=None):
+def draw(mc, moves, progress_cb=None, preserve_aspect=True, bounds=None, check_every=25, unidirectional=None,
+         pen_lift_mm=None, live=None):
     """Dibuja en el robot. Devuelve {'robot_errors': [(punto, codigo, texto)]}
     (ver lib.draw_moves). unidirectional: dibujar con la base girando en un
     solo sentido (ver j1_unidireccional); None = lo que diga el perfil activo."""
@@ -986,7 +1021,8 @@ def draw(mc, moves, progress_cb=None, preserve_aspect=True, bounds=None, check_e
     time.sleep(0.5)
     try:
         return lib.draw_moves(mc, moves, preserve_aspect=preserve_aspect, bounds=bounds,
-                              progress_cb=progress_cb, check_every=check_every)
+                              progress_cb=progress_cb, check_every=check_every, pen_lift_mm=pen_lift_mm,
+                              live=live)
     finally:
         try:
             mc.set_color(0, 255, 0)

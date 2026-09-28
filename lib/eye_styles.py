@@ -223,3 +223,64 @@ def test_design():
                              ((right_inner, y_mid), (right_inner + w, y_mid))):
             strokes += place_eye(style, inner, outer, (0, 1), {}, mm_per_px=1.0)
     return strokes, 2 * col_w - 8, rows * row_h
+
+
+# --- prueba de ojo con puntos -------------------------------------------------
+DOTS_EYE_WIDTH_MM = 70.0   # grande, para ver bien como queda un dibujo de puntos
+DOTS_SPACING_MM = 3.5      # entre puntos de una linea
+DOTS_FILL_MM = 2.5         # entre puntos del relleno de la pupila
+
+
+def _dots_along(points, spacing):
+    """Puntos cada `spacing` a lo largo de una polilinea (incluye las puntas)."""
+    seg = [math.dist(a, b) for a, b in zip(points, points[1:])]
+    total = sum(seg)
+    n = max(1, int(round(total / spacing)))
+    out, acc, k = [], 0.0, 0
+    for j in range(n + 1):
+        target = total * j / n
+        while k < len(seg) - 1 and acc + seg[k] < target:
+            acc += seg[k]
+            k += 1
+        t = (target - acc) / seg[k] if seg[k] else 0.0
+        a, b = points[k], points[k + 1]
+        out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+    return out
+
+
+def dots_eye_design():
+    """
+    Un ojo grande dibujado solo con puntos (la pluma baja y sube en el mismo
+    lugar): parpados e iris como lineas de puntos, pupila rellena con un
+    brillo sin puntos. Devuelve trazos de un solo punto en mm, y hacia arriba.
+    """
+    hw = DOTS_EYE_WIDTH_MM / 2
+    up, down = hw * 0.45, hw * 0.3
+    n = 400   # curvas muestreadas bien fino antes de repartir los puntos
+    upper = [(-hw + 2 * hw * k / n, up * math.sin(math.pi * k / n)) for k in range(n + 1)]
+    lower = [(-hw + 2 * hw * k / n, -down * math.sin(math.pi * k / n)) for k in range(n + 1)]
+    dots = _dots_along(upper, DOTS_SPACING_MM) + _dots_along(lower, DOTS_SPACING_MM)[1:-1]  # puntas una vez
+
+    r_iris, r_pupil = hw * 0.36, hw * 0.15
+    cy = (up - down) / 4
+    p = dict(up=up / hw, down=down / hw)
+    circle = [(r_iris * math.cos(2 * math.pi * k / 360), cy + r_iris * math.sin(2 * math.pi * k / 360))
+              for k in range(361)]
+    for x, y in _dots_along(circle, DOTS_SPACING_MM)[:-1]:
+        if _inside_lids(x / hw, y / hw, p):
+            dots.append((x, y))
+
+    glint = (r_pupil * 0.45, cy + r_pupil * 0.45)   # brillo: arriba a la derecha de la pupila
+    n = int(r_pupil // DOTS_FILL_MM) + 1
+    for i in range(-n, n + 1):
+        for j in range(-n, n + 1):
+            x = i * DOTS_FILL_MM + (DOTS_FILL_MM / 2 if j % 2 else 0)   # tresbolillo
+            y = cy + j * DOTS_FILL_MM * 0.87
+            if math.hypot(x, y - cy) <= r_pupil and math.dist((x, y), glint) > r_pupil * 0.35:
+                dots.append((x, y))
+    # donde el iris cruza los parpados quedan puntos casi encimados: uno solo
+    kept = []
+    for d in dots:
+        if all(math.dist(d, k) >= 0.6 * DOTS_SPACING_MM for k in kept):
+            kept.append(d)
+    return [[d] for d in kept]

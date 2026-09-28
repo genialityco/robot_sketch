@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/tablet.webmanifest">
+<title>Lienzo del robot</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; overscroll-behavior: none;
+               -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+               font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; touch-action: none; display: block; }
+  #gear { position: fixed; top: 10px; right: 10px; width: 44px; height: 44px; border-radius: 22px; border: 1px solid #ccc;
+          background: rgba(255,255,255,.85); font-size: 22px; line-height: 42px; text-align: center; color: #555; z-index: 3; }
+  #panel { position: fixed; top: 64px; right: 10px; width: min(330px, calc(100vw - 20px)); max-height: calc(100vh - 80px);
+           overflow: auto; background: #fff; border: 1px solid #ccc; border-radius: 10px; padding: 14px;
+           box-shadow: 0 6px 24px rgba(0,0,0,.15); z-index: 3; font-size: 14px; color: #222; }
+  #panel h2 { font-size: 16px; margin: 0 0 8px; }
+  #panel label { display: block; margin: 10px 0 4px; color: #555; }
+  #panel input[type=range] { width: 100%; }
+  #panel select, #panel button { font-size: 15px; padding: 6px 10px; }
+  #panel .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  #panel p { color: #666; margin: 8px 0 0; line-height: 1.35; }
+  .hidden { display: none !important; }
+  /* aviso mientras no esta en pantalla completa (un toque la activa) */
+  #fs-hint { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 2; pointer-events: none;
+             background: rgba(30,30,30,.82); color: #fff; font-size: 15px; padding: 9px 16px; border-radius: 20px;
+             white-space: nowrap; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="gear" role="button" aria-label="Ajustes">⚙</div>
+<div id="fs-hint" class="hidden">Tocá la pantalla para verla completa</div>
+<div id="panel" class="hidden">
+  <h2>Lienzo del robot</h2>
+  <label>Modo
+    <select id="mode">
+      <option value="calibracion">Calibración (cruces en las esquinas)</option>
+      <option value="dibujo">Dibujo</option>
+    </select>
+  </label>
+  <label>Dónde queda "arriba" de la hoja (el lado lejos del robot)
+    <select id="orient">
+      <option value="arriba">Arriba de la pantalla</option>
+      <option value="derecha">Derecha</option>
+      <option value="abajo">Abajo</option>
+      <option value="izquierda">Izquierda</option>
+    </select>
+  </label>
+  <p id="orient-note"></p>
+  <label>Margen izquierdo: <span id="lv"></span>%<input type="range" id="left" min="0" max="45" step="0.5"></label>
+  <label>Margen derecho: <span id="rv"></span>%<input type="range" id="right" min="0" max="45" step="0.5"></label>
+  <label>Margen de arriba: <span id="tv"></span>%<input type="range" id="top" min="0" max="45" step="0.5"></label>
+  <label>Margen de abajo: <span id="bv"></span>%<input type="range" id="bottom" min="0" max="45" step="0.5"></label>
+  <p>Grosor del trazo: <span id="wv"></span> mm (se cambia en Calibración, en la app).</p>
+  <div class="row">
+    <button id="close">Cerrar</button>
+  </div>
+  <p id="fs-note"></p>
+  <p>El área (el recuadro) tiene que quedar al alcance del brazo. Calibrá un perfil nuevo en la app capturando las 4 esquinas con la punta sobre las cruces, con esta misma posición de la tableta y en pantalla completa (sin pantalla completa el recuadro queda en otro lugar). Los toques sobre el lienzo se ignoran; los ajustes se guardan en esta tableta.</p>
+</div>
+<script>
+(function () {
+  'use strict';
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const $ = (id) => document.getElementById(id);
+
+  // --- ajustes (se guardan en esta tableta) --------------------------------
+  const DEFAULTS = { mode: 'calibracion', orient: 'arriba', left: 20, right: 20, top: 15, bottom: 15 };
+  let cfg = Object.assign({}, DEFAULTS);
+  try { Object.assign(cfg, JSON.parse(localStorage.getItem('lienzo-robot') || '{}')); } catch (e) { /* sin almacenamiento */ }
+  function save() { try { localStorage.setItem('lienzo-robot', JSON.stringify(cfg)); } catch (e) { /* nada */ } }
+
+  function syncPanel() {
+    ['mode', 'orient', 'left', 'right', 'top', 'bottom'].forEach((k) => { $(k).value = cfg[k]; });
+    // la orientacion del perfil activo manda sobre la de la tableta
+    $('orient').value = orient(); $('orient').disabled = !!live.tablet_orient;
+    $('orient-note').textContent = live.tablet_orient ? 'La fija el perfil de calibración activo (se cambia en la app, Calibración).' : '';
+    $('lv').textContent = cfg.left; $('rv').textContent = cfg.right; $('tv').textContent = cfg.top;
+    $('bv').textContent = cfg.bottom; $('wv').textContent = lineMm();
+  }
+  ['mode', 'orient', 'left', 'right', 'top', 'bottom'].forEach((k) => {
+    $(k).addEventListener('input', () => {
+      cfg[k] = (k === 'mode' || k === 'orient') ? $(k).value : Number($(k).value);
+      save(); syncPanel(); dirty = true;
+    });
+  });
+  $('gear').addEventListener('click', () => { $('panel').classList.toggle('hidden'); syncPanel(); });
+  $('close').addEventListener('click', () => $('panel').classList.add('hidden'));
+
+  // --- siempre en pantalla completa ------------------------------------------
+  // El navegador solo la deja activar con un toque: cualquier toque la activa
+  // (tambien el del lapiz del brazo), y si se sale (gesto de volver, Esc), el
+  // proximo toque la vuelve a activar. Agregada a la pantalla de inicio abre
+  // ya en pantalla completa (ver /tablet.webmanifest).
+  const root = document.documentElement;
+  const fsRequest = root.requestFullscreen || root.webkitRequestFullscreen;
+  const standalone = window.matchMedia('(display-mode: fullscreen), (display-mode: standalone)').matches ||
+    navigator.standalone === true;
+  function isFull() { return !!(document.fullscreenElement || document.webkitFullscreenElement) || standalone; }
+  function goFull() {
+    if (!fsRequest || isFull()) return;
+    try {
+      const r = fsRequest.call(root, { navigationUI: 'hide' });
+      if (r && r.catch) r.catch(() => {});
+    } catch (e) { /* sin permiso: se reintenta en el proximo toque */ }
+  }
+  function syncFsHint() {
+    $('fs-hint').classList.toggle('hidden', !fsRequest || isFull());
+    $('fs-note').textContent = isFull() ? '' : fsRequest
+      ? 'Tocá cualquier parte de la pantalla para verla completa.'
+      : 'Este navegador no permite pantalla completa: agregá la página a la pantalla de inicio (Compartir → Agregar a inicio) y abrila desde ahí.';
+  }
+  ['pointerup', 'touchend', 'click', 'keydown'].forEach((ev) => document.addEventListener(ev, goFull, true));
+  ['fullscreenchange', 'webkitfullscreenchange'].forEach((ev) => document.addEventListener(ev, () => { syncFsHint(); resize(); }));
+  goFull();   // por si el navegador lo permite sin toque
+
+  // el lapiz del brazo toca la pantalla: nada de scroll, zoom ni menus
+  ['touchstart', 'touchmove', 'touchend', 'gesturestart', 'gesturechange', 'contextmenu', 'dblclick'].forEach((ev) =>
+    canvas.addEventListener(ev, (e) => e.preventDefault(), { passive: false }));
+  document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
+
+  // --- geometria -------------------------------------------------------------
+  let W = 0, H = 0, dpr = 1;
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    maskCanvas.width = canvas.width; maskCanvas.height = canvas.height;
+    maskUpTo = 0;   // el boceto se redibuja a la nueva escala
+    dirty = true;
+  }
+  window.addEventListener('resize', resize);
+
+  function rect() {
+    return { x0: W * cfg.left / 100, y0: H * cfg.top / 100, x1: W * (1 - cfg.right / 100), y1: H * (1 - cfg.bottom / 100) };
+  }
+  // (u, v) de la hoja (u: izquierda -> derecha, v: abajo -> arriba) -> pixeles
+  function toPx(u, v, r) {
+    let sx, sy;
+    switch (orient()) {
+      case 'derecha': sx = v; sy = u; break;
+      case 'abajo': sx = 1 - u; sy = v; break;
+      case 'izquierda': sx = 1 - v; sy = 1 - u; break;
+      default: sx = u; sy = 1 - v;
+    }
+    return [r.x0 + sx * (r.x1 - r.x0), r.y0 + sy * (r.y1 - r.y0)];
+  }
+
+  // --- estado del dibujo (del servidor) ------------------------------------
+  let live = { id: null, points: [], reveal: 0, done: true, area_mm: null, total: 0 };
+  let shown = 0;          // avance mostrado (se acerca suave al del servidor)
+  let dirty = true;
+  let lastOk = 0;
+  function lineMm() { return live.line_mm || 2.5; }
+  // como esta puesta la tableta: la del perfil activo (Calibracion) manda; si no la tiene, el ajuste de aca
+  function orient() { return live.tablet_orient || cfg.orient; }
+
+  // --- dibujo a lapiz: el recorrido se dibuja como grafito -------------------
+  // (live.render === 'pencil') Cada tramo con la pluma abajo se dibuja como un
+  // trazo de lapiz: textura de grafito, intensidad y grosor que varian un poco
+  // (como la presion de una mano) y un segundo trazo apenas corrido. No hay
+  // imagen de fondo ni fundido: lo que se ve es exactamente lo que el brazo
+  // recorrio, y la descarga sale igual.
+  const maskCanvas = document.createElement('canvas');   // el dibujo hecho hasta ahora
+  const mctx = maskCanvas.getContext('2d');
+  let maskUpTo = 0;
+
+  // textura de grafito: grano irregular del tono elegido (live.color_hex), se
+  // usa como "color" del trazo
+  const grains = {};
+  function grainFor(hex) {
+    if (!/^#[0-9a-f]{6}$/i.test(hex || '')) hex = '#2d2d2d';
+    if (grains[hex]) return grains[hex];
+    const rgb = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16));
+    const c = document.createElement('canvas');
+    c.width = c.height = 96;
+    const g = c.getContext('2d');
+    const im = g.createImageData(96, 96);
+    for (let i = 0; i < im.data.length; i += 4) {
+      const f = 0.7 + Math.random() * 0.6;   // el grano: un poco mas claro u oscuro
+      im.data[i] = Math.min(255, rgb[0] * f); im.data[i + 1] = Math.min(255, rgb[1] * f); im.data[i + 2] = Math.min(255, rgb[2] * f);
+      im.data[i + 3] = 150 + Math.random() * 105;
+    }
+    g.putImageData(im, 0, 0);
+    return (grains[hex] = mctx.createPattern(c, 'repeat'));
+  }
+
+  function newDrawing() {
+    maskUpTo = 0;
+    mctx.setTransform(1, 0, 0, 1, 0, 0); mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  }
+
+  function pxPerMm(r) {
+    const a = live.area_mm || [110, 100];
+    return Math.sqrt(((r.x1 - r.x0) * (r.y1 - r.y0)) / (a[0] * a[1]));
+  }
+
+  function pointAt(p, s) {
+    const k = Math.min(Math.floor(s), p.length - 1), t = s - k;
+    if (k + 1 >= p.length) return [p[k][0], p[k][1]];
+    return [p[k][0] + (p[k + 1][0] - p[k][0]) * t, p[k][1] + (p[k + 1][1] - p[k][1]) * t];
+  }
+
+  // pseudoaleatorio fijo por tramo (al redibujar tras un cambio de tamano sale igual)
+  function jitter(k) { const x = Math.sin(k * 12.9898) * 43758.5453; return x - Math.floor(x) - 0.5; }
+
+  // dibuja lo recorrido entre maskUpTo y `upTo` (solo con la pluma abajo)
+  function growSketch(p, upTo, r) {
+    if (upTo <= maskUpTo) return;
+    const base = lineMm() * pxPerMm(r);   // el "Grosor del trazo en la tableta" de la calibracion, en mm
+    mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    mctx.strokeStyle = grainFor(live.color_hex); mctx.lineCap = 'round';
+    for (let k = Math.floor(maskUpTo); k < Math.min(Math.ceil(upTo), p.length - 1); k++) {
+      if (!p[k][2] || !p[k + 1][2]) continue;
+      const a = pointAt(p, Math.max(k, maskUpTo)), b = pointAt(p, Math.min(k + 1, upTo));
+      const [ax, ay] = toPx(a[0], a[1], r), [bx, by] = toPx(b[0], b[1], r);
+      const len = Math.hypot(bx - ax, by - ay) || 1, nx = -(by - ay) / len, ny = (bx - ax) / len;
+      const pressure = 0.82 + 0.18 * jitter(k * 7.1);   // varia de a poco, como la presion de la mano
+      mctx.globalAlpha = 0.78 * pressure;
+      const rel = p[k + 1][3] || 1;   // grosor relativo del tramo (los rasgos, mas finos)
+      mctx.lineWidth = Math.max(0.7, base * rel * (1 + 0.12 * jitter(k * 3.3)));   // +-6% alrededor del grosor elegido
+      mctx.beginPath(); mctx.moveTo(ax, ay); mctx.lineTo(bx, by); mctx.stroke();
+      // segundo trazo, apenas corrido y mas suave (la mano no pasa dos veces igual)
+      const o = jitter(k) * base * rel * 1.2;
+      mctx.globalAlpha = 0.22 * pressure;
+      mctx.lineWidth *= 0.7;
+      mctx.beginPath(); mctx.moveTo(ax + nx * o, ay + ny * o); mctx.lineTo(bx + nx * o, by + ny * o); mctx.stroke();
+    }
+    mctx.globalAlpha = 1;
+    maskUpTo = upTo;
+  }
+
+  function renderPencil(r) {
+    const p = live.points || [];
+    if (!p.length) return;
+    growSketch(p, shown, r);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(maskCanvas, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch('/api/live' + (live.id ? '?have=' + live.id : ''), { cache: 'no-store' });
+      const d = await res.json();
+      if (d.id !== live.id) {
+        live = d;
+        shown = 0;
+        newDrawing();
+      } else {
+        live.reveal = d.reveal; live.done = d.done; live.total = d.total; live.line_mm = d.line_mm;
+        if (live.tablet_orient !== d.tablet_orient) { live.tablet_orient = d.tablet_orient; newDrawing(); dirty = true; syncPanel(); }
+      }
+      if (!$('panel').classList.contains('hidden')) $('wv').textContent = lineMm();
+      lastOk = Date.now();
+      dirty = true;
+    } catch (e) { /* sin conexion: se reintenta */ }
+    setTimeout(poll, 150);
+  }
+
+  // --- dibujo --------------------------------------------------------------
+  function lineWidthPx(r) {
+    const a = live.area_mm || [110, 100];
+    const pxPerMm = Math.sqrt(((r.x1 - r.x0) * (r.y1 - r.y0)) / (a[0] * a[1]));
+    return Math.max(1, lineMm() * pxPerMm);
+  }
+
+  function drawCross(x, y, size, label) {
+    ctx.beginPath();
+    ctx.moveTo(x - size, y); ctx.lineTo(x + size, y);
+    ctx.moveTo(x, y - size); ctx.lineTo(x, y + size);
+    ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+    if (label) {
+      ctx.fillText(label, x + (x < W / 2 ? 10 : -10), y + (y < H / 2 ? 22 : -14));
+    }
+  }
+
+  function render() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    const r = rect();
+
+    if (cfg.mode === 'calibracion') {
+      ctx.strokeStyle = '#1a73e8'; ctx.fillStyle = '#1a73e8'; ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 6]);
+      ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+      ctx.setLineDash([]);
+      ctx.font = '15px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      [[0, 1, 'arriba izquierda'], [1, 1, 'arriba derecha'], [1, 0, 'abajo derecha'], [0, 0, 'abajo izquierda']]
+        .forEach(([u, v, name]) => { const [x, y] = toPx(u, v, r); drawCross(x, y, 26, name); });
+      const [cx, cy] = toPx(0.5, 0.5, r);
+      drawCross(cx, cy, 14, 'centro');
+    }
+
+    // dibujo a lapiz: trazos de grafito; si no, lineas lisas hasta `shown`
+    const p = live.points || [];
+    if (live.render === 'pencil') {
+      renderPencil(r);
+      const frac = p.length > 1 ? Math.min(1, shown / (p.length - 1)) : 0;
+      ctx.fillStyle = live.done ? '#9ccc9c' : '#c8c8c8';
+      ctx.fillRect(0, H - 4, W * frac, 4);
+    } else if (p.length) {
+      ctx.strokeStyle = live.color_hex || '#111'; ctx.fillStyle = live.color_hex || '#111';
+      ctx.lineWidth = lineWidthPx(r); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const k = Math.min(Math.floor(shown), p.length - 1);
+      const t = shown - k;
+      ctx.beginPath();
+      for (let i = 1; i <= k; i++) {
+        const a = p[i - 1], b = p[i];
+        if (b[2] && a[2]) {
+          const [ax, ay] = toPx(a[0], a[1], r), [bx, by] = toPx(b[0], b[1], r);
+          ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+        }
+      }
+      if (k + 1 < p.length && p[k][2] && p[k + 1][2] && t > 0) {
+        const a = p[k], b = p[k + 1];
+        const [ax, ay] = toPx(a[0], a[1], r);
+        const [bx, by] = toPx(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, r);
+        ctx.moveTo(ax, ay); ctx.lineTo(bx, by);
+      }
+      ctx.stroke();
+      // puntos sueltos (la pluma baja y sube en el mismo lugar)
+      for (let i = 1; i <= k; i++) {
+        const isDot = p[i][2] && !p[i - 1][2] && (i + 1 >= p.length || !p[i + 1][2]);
+        if (isDot) {
+          const [x, y] = toPx(p[i][0], p[i][1], r);
+          ctx.beginPath(); ctx.arc(x, y, ctx.lineWidth / 2, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      // avance, abajo de todo, fuera del lienzo
+      const frac = p.length > 1 ? Math.min(1, shown / (p.length - 1)) : 0;
+      ctx.fillStyle = live.done ? '#9ccc9c' : '#c8c8c8';
+      ctx.fillRect(0, H - 4, W * frac, 4);
+    }
+
+    if (cfg.mode === 'calibracion' && Date.now() - lastOk > 2000) {
+      ctx.fillStyle = '#c00'; ctx.font = '15px system-ui, sans-serif'; ctx.textAlign = 'left';
+      ctx.fillText('Sin conexión con el servidor', 12, H - 14);
+    }
+  }
+
+
+  function frame() {
+    const target = Math.min(live.reveal || 0, (live.points || []).length - 1);
+    if (Math.abs(target - shown) > 0.002) {
+      shown += (target - shown) * 0.35;   // suave, sin saltos
+      if (Math.abs(target - shown) < 0.01) shown = target;
+      dirty = true;
+    }
+    if (dirty) { dirty = false; render(); }
+    requestAnimationFrame(frame);
+  }
+
+  resize(); syncPanel(); syncFsHint(); poll(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

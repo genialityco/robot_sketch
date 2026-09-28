@@ -20,8 +20,44 @@ BAUD = 115200
 # puntos (ver connect()).
 LAST_FRESH_MODE = None
 
-DRAW_SPEED = 40       # velocidad con la pluma tocando el papel (dibujando); era 80
+DRAW_SPEED = 100      # velocidad con la pluma tocando el papel (dibujando); fue 80 y 40
 TRAVEL_SPEED = 100       # velocidad con la pluma levantada (desplazamientos)
+# Aterrizaje en dos etapas: la bajada rapida se detiene LANDING_HOVER_MM sobre
+# el papel y el ultimo tramo se hace a LANDING_SPEED (la misma de "Tocar" en la
+# calibracion). Sin esto la pluma bajaba todo el levantado de un solo
+# movimiento a DRAW_SPEED y el esfero con resorte podia llegar al papel todavia
+# en movimiento (sospecha: saltos al empezar el trazo). 0 = bajada de un solo
+# movimiento, como antes.
+LANDING_HOVER_MM = 3.0
+LANDING_SPEED = 100   # fue 15 (tramo lento al apoyar y al despegar); a 100 ya no hay tramo lento
+# Lo mismo al levantar la pluma: los primeros SLOW_LIFT_MM se suben a
+# LANDING_SPEED (con el porta-pluma de resortes la punta sigue apoyada ese
+# tramo, y una subida brusca la arrastraba) y el resto a TRAVEL_SPEED.
+# 0 = subida de un solo movimiento rapido.
+SLOW_LIFT_MM = 6.0
+# Pausa al final de cada trazo, con la pluma todavia apoyada, antes de
+# levantarla. Mientras dibuja, J1 (la base) va 2-3 mm atrasado: cuando llega
+# el ultimo punto, X (J2/J3) ya termino y J1 no, y la subida salia enseguida.
+# Visto 2026-09-26 dibujando la base en un solo sentido, en los DOS sentidos:
+# el final de cada tramo quedaba sin cerrar, con una rayita en X (lo que
+# faltaba de la curva dibujado solo por J2/J3). 0 = sin pausa.
+STROKE_END_DWELL_S = 1.0
+DWELL_MIN_STROKE_MM = 3.0   # trazos mas cortos (puntos, rayitas) no esperan
+
+# Modo tableta (lo prende el perfil, ver calibration._apply): el brazo "dibuja"
+# sobre una tableta que muestra el trazo planeado (pagina /tablet), asi que no
+# hay tinta ni friccion: entre trazos la punta sube apenas TABLET_LIFT_MM, sin
+# esperas en cada trazo ni sincronizaciones, los tramos no se parten, los trazos
+# pegados se unen sin levantar (TABLET_JOIN_MM), y la pausa entre puntos es solo
+# la del recorrido a TABLET_SPEED_MM_S. El dibujo dura lo que dura el recorrido.
+TABLET_MODE = False
+TABLET_SPEED_MM_S = 28.0     # ritmo al que se mandan los puntos (estimado; el log del dibujo
+                             # imprime la velocidad real medida: ajustar con ese valor)
+TABLET_MIN_PACING = 0.03
+TABLET_LIFT_MM = 2.0         # cuanto sube la punta entre trazos (sin esperas: solo para que no arrastre)
+TABLET_JOIN_MM = 1.5         # trazos que empiezan a menos de esto del final del anterior se unen sin levantar
+TABLET_MOVE_MODE = 1         # 1 = lineal (el de siempre); 0 = angular, suele ser mas rapido pero la punta
+                             # no va en linea recta entre puntos: probar con cuidado (puede rozar la pantalla)
 PEN_LIFT_MM = 35.0       # cuanto se levanta la pluma (mm). Subido de 15.6: el modelo de
                          # altura de contacto solo tiene 4 puntos medidos, y el error del
                          # modelo en el interior de la hoja puede ser de varios mm -- si el
@@ -632,7 +668,7 @@ def _read_xyz(mc):
     return None
 
 
-def _wait_until_settled(mc, target, expected_s, xy_only=False, still_time=None):
+def _wait_until_settled(mc, target, expected_s, xy_only=False, still_time=None, on_read=None):
     """
     Espera hasta que el brazo llegue a `target` o deje de moverse.
 
@@ -650,6 +686,8 @@ def _wait_until_settled(mc, target, expected_s, xy_only=False, still_time=None):
     timeout = max(SETTLE_TIMEOUT_S, expected_s * 2)
     while time.time() - t0 < timeout:
         cur = _read_xyz(mc)
+        if on_read is not None:
+            on_read(cur)
         now = time.time()
         if cur is not None:
             n = 2 if xy_only else 3
@@ -666,19 +704,21 @@ def _wait_until_settled(mc, target, expected_s, xy_only=False, still_time=None):
     return 'timeout'
 
 
-def iter_target_coords(moves, preserve_aspect=False, bounds=None):
+def iter_target_coords(moves, preserve_aspect=False, bounds=None, lift_mm=None):
     """
     Calcula, para cada punto de `moves`, las coordenadas reales del robot
     (mismo mapeo que usa draw_moves: normalizar a u,v y pasar por bilinear(),
     con el ajuste de PEN_LIFT_MM cuando la pluma esta arriba). No manda nada
     al robot -- sirve tanto para draw_moves() como para generar un preview
     fiel sin conectar hardware. Genera tuplas (i, total, x_local, y_local,
-    pen_down, coords), 1-indexado.
+    pen_down, coords), 1-indexado. lift_mm: levantado para este dibujo (None =
+    PEN_LIFT_MM, el del perfil).
     """
+    lift = PEN_LIFT_MM if lift_mm is None else lift_mm
     for i, total, x_local, y_local, pen_down, u, v in iter_sheet_uv(moves, preserve_aspect, bounds):
         coords = bilinear(u, v)
         if not pen_down:
-            coords[2] += PEN_LIFT_MM
+            coords[2] += lift
         yield i, total, x_local, y_local, pen_down, coords
 
 
@@ -733,7 +773,24 @@ def iter_sheet_uv(moves, preserve_aspect=False, bounds=None):
 MAX_DRAW_SEGMENT_MM = 10.0
 
 
-def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, check_every=25):
+def _join_close_strokes(moves, preserve_aspect, bounds, join_mm):
+    """Modo tableta: si un trazo empieza a menos de join_mm (en el papel) de
+    donde termino el anterior, se sigue sin levantar la pluma (el viaje pasa a
+    ser parte del trazo): lineas continuas y menos saltos."""
+    if join_mm <= 0 or len(moves) < 3:
+        return moves
+    coords = [c for *_, c in iter_target_coords(moves, preserve_aspect, bounds, 0.0)]
+    out = list(moves)
+    for i in range(1, len(moves) - 1):
+        # (fin de un trazo) -> punto de viaje -> bajada en el mismo lugar
+        if (moves[i - 1][2] and not moves[i][2] and moves[i + 1][2]
+                and math.dist(coords[i - 1][:2], coords[i][:2]) <= join_mm):
+            out[i] = (moves[i][0], moves[i][1], True)
+    return out
+
+
+def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, check_every=25, pen_lift_mm=None,
+               live=None):
     """
     Envia al robot una lista de movimientos [(x_local, y_local, pluma_abajo), ...].
 
@@ -774,7 +831,8 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
     # since_sync: comandos mandados desde la ultima vez que se confirmo la
     # llegada; sync_waits: cuanto tuvo que esperar cada sincronizacion (si
     # son largas, el brazo iba atrasado respecto de lo que se le mandaba)
-    state = {'xyz': None, 'since_sync': 0, 'sync_waits': [], 'sync_results': []}
+    state = {'xyz': None, 'since_sync': 0, 'sync_waits': [], 'sync_results': [], 'stroke_len': 0.0,
+             'sent_idx': 0, 'reveal': 0.0}
     backlash = J1Backlash(J1_BACKLASH_DEG)
     if J1_BACKLASH_DEG > 0:
         print(f'Compensando juego de la base (J1): {J1_BACKLASH_DEG:g} grados.', flush=True)
@@ -799,7 +857,7 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
                 send(backlash.last, speed, settle=False, label=f'toma del juego antes de {label}', engage=d)
         coords = backlash.command(coords, engage)
         try:
-            mc.send_coords(coords, speed, MOVE_MODE)
+            mc.send_coords(coords, speed, TABLET_MOVE_MODE if tablet else MOVE_MODE)
         except Exception as exc:
             errors += 1
             print(f'  !! error en {label}: {exc!r} (se continua con el siguiente)', flush=True)
@@ -807,14 +865,17 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
         dist = math.dist(state['xyz'], xyz) if state['xyz'] is not None else 0.0
         state['xyz'] = xyz
         pacing = min(MAX_PACING, max(MIN_PACING, dist / ASSUMED_SPEED_MM_S + PACING_OVERHEAD))
+        if tablet:   # sin esperas: solo el tiempo del recorrido
+            pace(max(TABLET_MIN_PACING, dist / TABLET_SPEED_MM_S))
+            return
         if settle and WAIT_AT_PEN_TRANSITIONS:
-            result = _wait_until_settled(mc, coords, expected_s=pacing)
+            result = _wait_until_settled(mc, coords, expected_s=pacing, on_read=track)
             if result == 'timeout':
                 print(f'    (no se confirmo la llegada en {label}; se sigue igual)', flush=True)
             time.sleep(SETTLE_PAUSE_S)
             state['since_sync'] = 0
         else:
-            time.sleep(pacing)
+            pace(pacing)
             state['since_sync'] += 1
             if SYNC_EVERY and state['since_sync'] >= SYNC_EVERY:
                 t0 = time.time()
@@ -822,7 +883,8 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
                 # pedida. "Quieto" solo si lleva SYNC_STILL_S sin moverse: entre
                 # dos micro-movimientos encolados el brazo puede parar un instante
                 # sin haber terminado la cola.
-                result = _wait_until_settled(mc, coords, expected_s=0, xy_only=True, still_time=SYNC_STILL_S)
+                result = _wait_until_settled(mc, coords, expected_s=0, xy_only=True, still_time=SYNC_STILL_S,
+                                             on_read=track)
                 waited = time.time() - t0
                 state['sync_waits'].append(waited)
                 # diagnostico: donde quedo realmente el brazo respecto del punto pedido
@@ -833,7 +895,65 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
                       f'{"?" if off is None else f"{off:.1f}"} mm (x,y) del punto pedido', flush=True)
                 state['since_sync'] = 0
 
-    targets = list(iter_target_coords(moves, preserve_aspect, bounds))
+    tablet = TABLET_MODE
+    if tablet:
+        print('Modo tableta: la punta sube %g mm entre trazos, sin esperas.' % TABLET_LIFT_MM, flush=True)
+        backlash.half = 0.0   # sobre la tableta no hay trazo que corregir: sin tomas del juego de J1
+    # en la tableta los viajes van apenas por encima de la pantalla (TABLET_LIFT_MM), sin esperas
+    lift_mm = TABLET_LIFT_MM if tablet else (PEN_LIFT_MM if pen_lift_mm is None else pen_lift_mm)
+
+    # --- avance para la tableta (live) ------------------------------------
+    # Hasta donde se dibujo DE VERDAD, como indice fraccionario en `targets`
+    # (3.4 = 40% del tramo 3->4). El indice de lo mandado se adelanta al brazo
+    # (los comandos van en cola), y get_coords se equivoca varios mm: se usa
+    # solo para ubicar al brazo A LO LARGO del trazo, proyectandolo sobre los
+    # tramos entre lo ya revelado y lo ultimo mandado. Nunca retrocede.
+    def track(cur):
+        if live is None or cur is None:
+            return
+        best = None
+        for k in range(int(state['reveal']), min(state['sent_idx'], len(targets) - 1)):
+            a, b = targets[k][5], targets[k + 1][5]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            l2 = dx * dx + dy * dy
+            t = 0.0 if not l2 else max(0.0, min(1.0, ((cur[0] - a[0]) * dx + (cur[1] - a[1]) * dy) / l2))
+            d = math.hypot(a[0] + dx * t - cur[0], a[1] + dy * t - cur[1])
+            if best is None or d < best[0]:
+                best = (d, k + t)
+        if best is not None and best[1] > state['reveal']:
+            state['reveal'] = best[1]
+            live.reveal(state['reveal'])
+
+    def pace(seconds):
+        """Espera `seconds`; con live, leyendo la posicion mientras tanto."""
+        if live is None:
+            time.sleep(seconds)
+            return
+        t_end = time.time() + seconds
+        while True:
+            track(_read_xyz(mc))
+            rest = t_end - time.time()
+            if rest <= 0:
+                break
+            time.sleep(min(0.1, rest))
+
+    def lift_pen(at, label):
+        """Sube en vertical sobre `at`: despacio los primeros mm (ver
+        SLOW_LIFT_MM); si el levantado entero no pasa de eso, todo despacio."""
+        lift = list(at)
+        lift[2] += lift_mm
+        if SLOW_LIFT_MM >= lift_mm:
+            send(lift, LANDING_SPEED, settle=True, label=label + ' (despacio)')
+            return
+        if SLOW_LIFT_MM > 0:
+            first = list(at)
+            first[2] += SLOW_LIFT_MM
+            send(first, LANDING_SPEED, settle=True, label=label + ' (despegue lento)')
+        send(lift, TRAVEL_SPEED, settle=True, label=label)
+
+    if tablet:
+        moves = _join_close_strokes(moves, preserve_aspect, bounds, TABLET_JOIN_MM)
+    targets = list(iter_target_coords(moves, preserve_aspect, bounds, lift_mm))
 
     def first_stroke_direction(k):
         """Sentido de giro de la base del primer tramo que mueve J1 en el
@@ -847,7 +967,11 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
                 return d
         return 0
 
+    if live is not None:
+        live.start([(u, v, pd) for _i, _t, _x, _y, pd, u, v in iter_sheet_uv(moves, preserve_aspect, bounds)])
+
     for idx, (i, total, x_local, y_local, pen_down, coords) in enumerate(targets):
+        state['sent_idx'] = idx
 
         speed = DRAW_SPEED if pen_down else TRAVEL_SPEED
         estado = 'ABAJO' if pen_down else 'ARRIBA'
@@ -860,19 +984,19 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
         if progress_cb is not None:
             progress_cb(i, total, f'pluma {estado.lower()} ({tag})')
 
-        if prev_pen_down and not pen_down and prev_coords is not None:
+        if prev_pen_down and not pen_down and prev_coords is not None and not tablet:
             # Fin de trazo: subir en VERTICAL sobre el ultimo punto antes de
             # viajar. Sin esto, el viaje al proximo trazo salia en diagonal
             # desde el papel (sube y se corre de lado a la vez), y el esfero
             # arrastraba unos mm al despegarse: un gancho al final de cada trazo.
-            lift = list(prev_coords)
-            lift[2] += PEN_LIFT_MM
-            send(lift, TRAVEL_SPEED, settle=True, label=f'levantar pluma antes del punto {i}')
+            if state['stroke_len'] >= DWELL_MIN_STROKE_MM:   # en un punto o una rayita no hay nada que alcanzar
+                time.sleep(STROKE_END_DWELL_S)   # que J1 alcance el ultimo punto (ver STROKE_END_DWELL_S)
+            lift_pen(prev_coords, f'levantar pluma antes del punto {i}')
             note_error(i - 1, _check_and_clear_error(mc))
 
         # Tramo largo con la pluma abajo: se parte en pasos de hasta
         # MAX_DRAW_SEGMENT_MM (ver ahi el porque).
-        if pen_down and prev_pen_down and prev_coords is not None:
+        if pen_down and prev_pen_down and prev_coords is not None and not tablet:   # en la tableta: tramos enteros
             seg = math.dist(prev_coords[:3], coords[:3])
             n_steps = int(math.ceil(seg / MAX_DRAW_SEGMENT_MM))
             for k in range(1, n_steps):
@@ -885,18 +1009,29 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
         # La bajada (pluma abajo justo despues de un viaje) ya es vertical: el
         # punto de viaje esta sobre el mismo x,y. Se espera a que el esfero
         # este apoyado antes de mandar el primer movimiento de lado.
-        landing = pen_down and prev_pen_down is False
-        send(coords, speed, settle=landing, label=f'punto {i}')
+        landing = pen_down and prev_pen_down is False and not tablet
+        if landing and LANDING_HOVER_MM > 0:
+            hover = list(coords)
+            hover[2] += LANDING_HOVER_MM
+            send(hover, TRAVEL_SPEED, settle=True, label=f'sobre el punto {i}')
+            send(coords, LANDING_SPEED, settle=True, label=f'punto {i}')
+        else:
+            send(coords, speed, settle=landing, label=f'punto {i}')
 
         # Entrada con la pluma arriba: si el trazo siguiente arranca girando la
         # base al reves de como llego el brazo, se toma el juego de J1 en el aire
         # (la pluma no se mueve, solo el engranaje cambia de lado) en vez de al
         # empezar a dibujar, donde se perdian los primeros mm del trazo.
-        if (not pen_down and backlash.half > 0 and idx + 1 < len(targets) and targets[idx + 1][4]):
+        if (not tablet and not pen_down and backlash.half > 0 and idx + 1 < len(targets) and targets[idx + 1][4]):
             d = first_stroke_direction(idx + 1)
             if d and d != backlash.engaged:
                 send(coords, speed, settle=False, label=f'precarga del juego antes del punto {i + 1}', engage=d)
 
+        # largo del trazo actual (para no esperar al final de un punto o una rayita)
+        if pen_down and prev_pen_down and prev_coords is not None:
+            state['stroke_len'] += math.dist(prev_coords[:2], coords[:2])
+        else:
+            state['stroke_len'] = 0.0
         prev_pen_down = pen_down
         prev_coords = coords
 
@@ -908,10 +1043,21 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
 
     # Al terminar: primero subir en vertical sobre el ultimo punto (mismo
     # motivo que al final de cada trazo), despues ir al centro.
-    if prev_pen_down and prev_coords is not None:
-        lift = list(prev_coords)
-        lift[2] += PEN_LIFT_MM
-        send(lift, TRAVEL_SPEED, settle=True, label='levantar pluma al final')
+    if prev_pen_down and prev_coords is not None and not tablet:
+        if state['stroke_len'] >= DWELL_MIN_STROKE_MM:
+            time.sleep(STROKE_END_DWELL_S)
+        lift_pen(prev_coords, 'levantar pluma al final')
+    if tablet and prev_coords is not None:
+        # los comandos pueden ir por delante del brazo: esperar a que llegue al final
+        # antes de dar el dibujo por terminado (la tableta sigue su avance real)
+        _wait_until_settled(mc, prev_coords, expected_s=0.5, xy_only=True, still_time=0.4, on_read=track)
+        path = sum(math.dist(a[5][:2], b[5][:2]) for a, b in zip(targets, targets[1:]))
+        took = time.time() - start_time
+        print(f'Modo tableta: {path:.0f} mm en {took:.1f} s = {path / max(took, 1e-6):.1f} mm/s reales '
+              f'(TABLET_SPEED_MM_S = {TABLET_SPEED_MM_S:g})', flush=True)
+    if live is not None:
+        live.reveal(float(len(targets) - 1))
+        live.finish()
     end_coords = bilinear(0.5, 0.5)
     end_coords[2] += PEN_LIFT_MM
     send(end_coords, TRAVEL_SPEED, settle=False, label='volver al centro')
@@ -1038,8 +1184,112 @@ def fit_design(strokes, rotation_deg, margin_mm, max_scale=1.0):
     s = min((w - 2 * margin_mm) / design_w, (h - 2 * margin_mm) / design_h, max_scale)
     moves = []
     for points in strokes:
-        moves += _stroke([(w / 2 + (x - cx) * s, h / 2 + (y - cy) * s) for x, y in points])
+        moves += _stroke(_resample_points([(w / 2 + (x - cx) * s, h / 2 + (y - cy) * s) for x, y in points],
+                                          DESIGN_STEP_MM))
     return moves, s
+
+
+# Paso entre puntos de los disenos de prueba, en mm del papel. Pasos mas
+# chicos que ~1.2 mm (MIN_SAFE_STEP_MM del pipeline de retratos) el brazo no
+# los reproduce: la zona muerta y el juego de los servos se comen la curva. El
+# rostro de prueba se genero con 24 puntos fijos por medialuna (0.6-0.7 mm en
+# un ojo de 16 mm) y los ojos salian con la mitad de su alto, mientras la boca
+# (1.2 mm) y la nariz (tramos de 10 mm) salian bien.
+DESIGN_STEP_MM = 1.5
+
+
+def _resample_points(points, step):
+    """Donde los puntos estan mas juntos que `step`, los redistribuye cada
+    ~step a lo largo de la polilinea; lo que ya tiene puntos separados (las
+    rectas, la cara grande) queda igual. Las puntas y las esquinas marcadas
+    (giros de mas de 30 grados) se conservan -- la base de la nariz no debe
+    redondearse. Un punto suelto queda igual."""
+    if len(points) < 2:
+        return list(points)
+
+    def turn(a, b, c):
+        v1, v2 = (b[0] - a[0], b[1] - a[1]), (c[0] - b[0], c[1] - b[1])
+        n1, n2 = math.hypot(*v1), math.hypot(*v2)
+        if not n1 or not n2:
+            return 0.0
+        return math.degrees(math.acos(max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))))
+
+    keep = [0] + [k for k in range(1, len(points) - 1) if turn(points[k - 1], points[k], points[k + 1]) > 30] +         [len(points) - 1]
+    out = [points[0]]
+    for a, b in zip(keep, keep[1:]):
+        piece = points[a:b + 1]
+        seg = [math.dist(p, q) for p, q in zip(piece, piece[1:])]
+        total = sum(seg)
+        if total / len(seg) >= step:
+            out.extend(piece[1:])   # ya tiene puntos separados (o es una recta): no se toca
+            continue
+        n = max(1, int(round(total / step)))
+        target, acc, k = 0.0, 0.0, 0
+        for j in range(1, n):
+            target = total * j / n
+            while k < len(seg) - 1 and acc + seg[k] < target:
+                acc += seg[k]
+                k += 1
+            t = (target - acc) / seg[k] if seg[k] else 0.0
+            p, q = piece[k], piece[k + 1]
+            out.append((p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t))
+        out.append(points[b])
+    return out
+
+
+
+DOTS_TEST_MARGIN_MM = 5.0
+# Levantado entre punto y punto: lo minimo para que la pluma no roce el papel
+# al viajar (el del perfil, ~25 mm, hace que cada punto tarde mucho). Con el
+# porta-pluma de resortes hay que dejar algo mas que su recorrido.
+DOTS_PEN_LIFT_MM = 6.0
+# Cada "punto" es una rayita de este largo (0 = punto de verdad, la pluma
+# baja y sube en el mismo lugar). Se orienta en la direccion en que J1 no se
+# mueve (alejandose/acercandose a la base): movimientos tan chicos de lado se
+# pierden en el atraso de J1, en cambio en X salen.
+DOTS_DASH_MM = 0.0
+
+
+def _no_j1_direction(x, y, w, h):
+    """Direccion (unitaria, en mm del area) en la que moverse desde (x, y)
+    no gira la base: perpendicular al gradiente del angulo de J1."""
+    def theta(px, py):
+        c = bilinear(px / w, py / h)
+        return math.atan2(c[1], c[0])
+    e = 0.5
+    t0 = theta(x, y)
+    gx, gy = (theta(x + e, y) - t0) / e, (theta(x, y + e) - t0) / e
+    n = math.hypot(gx, gy)
+    return (-gy / n, gx / n) if n else (0.0, 1.0)
+
+
+def test_dots_moves(rotation_deg=0):
+    """Un ojo grande hecho solo de puntos (ver eye_styles.dots_eye_design),
+    ordenados para viajar poco, cada punto como una rayita de DOTS_DASH_MM.
+    Lanza ValueError si el area es demasiado chica."""
+    import eye_styles
+    strokes = eye_styles.dots_eye_design()
+    # vecino mas cercano: los puntos del diseno vienen agrupados por linea, pero
+    # el relleno de la pupila conviene recorrerlo en orden
+    remaining, ordered, pos = list(strokes), [], (strokes[0][0][0] - 1e3, 0.0)
+    while remaining:
+        k = min(range(len(remaining)), key=lambda j: math.dist(remaining[j][0], pos))
+        pos = remaining[k][0]
+        ordered.append(remaining.pop(k))
+    moves, s = fit_design(ordered, rotation_deg, DOTS_TEST_MARGIN_MM)
+    _, w, _, h = area_bounds()
+    if s < 0.5:
+        raise ValueError(f'el area calibrada ({w:.0f}x{h:.0f} mm) es demasiado chica para el ojo de puntos.')
+    if DOTS_DASH_MM <= 0:
+        return moves
+    dashed = []
+    for x, y, pen_down in moves:
+        if not pen_down:
+            continue   # cada punto viene como (x, y, arriba), (x, y, abajo)
+        dx, dy = _no_j1_direction(x, y, w, h)
+        half = DOTS_DASH_MM / 2
+        dashed += _stroke([(x - dx * half, y - dy * half), (x + dx * half, y + dy * half)])
+    return dashed
 
 
 EYES_TEST_MARGIN_MM = 3.0

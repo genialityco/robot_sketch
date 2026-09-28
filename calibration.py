@@ -131,7 +131,29 @@ def _validate(profile):
     return dict(name=name, corners=corners, z_adjust_mm=z_adjust, center_z=center_z,
                 center_z_adjust_mm=center_adjust, center_xy=center_xy, manual_skew_mm=skew, pen_lift_mm=lift,
                 drawing_rotation=rotation, j1_backlash_deg=backlash,
-                j1_unidirectional=bool(profile.get('j1_unidirectional', False)))
+                j1_unidirectional=bool(profile.get('j1_unidirectional', False)),
+                j1_direction=-1 if str(profile.get('j1_direction', 1)) == '-1' else 1,
+                tablet_mode=bool(profile.get('tablet_mode', False)),
+                tablet_orient=_tablet_orient(profile.get('tablet_orient')))
+
+
+# Donde queda, en la pantalla de la tableta, el lado de la hoja lejos del robot
+# ("arriba" de las esquinas). Es del perfil (depende de como se puso la tableta
+# al calibrarlo): /tablet lo toma del perfil activo. None = el ajuste de la tableta.
+TABLET_ORIENTS = ('arriba', 'derecha', 'abajo', 'izquierda')
+
+
+def _tablet_orient(value):
+    if value in (None, ''):
+        return None
+    if value not in TABLET_ORIENTS:
+        raise ValueError('orientacion de la tableta invalida: %s' % value)
+    return value
+
+
+def active_tablet_orient():
+    profile_id = active_id()
+    return load(profile_id).get('tablet_orient') if profile_id else None
 
 
 # Un centro capturado mas lejos que esto del que dan las esquinas no es un
@@ -258,6 +280,9 @@ def load(profile_id):
     data.setdefault('center_z_adjust_mm', 0.0)
     data.setdefault('j1_backlash_deg', 0.0)
     data.setdefault('j1_unidirectional', False)
+    data.setdefault('j1_direction', 1)
+    data.setdefault('tablet_mode', False)
+    data.setdefault('tablet_orient', None)
     data.setdefault('z_adjust_mm', {})  # perfiles guardados antes de existir el ajuste
     for key in CORNERS:
         data['z_adjust_mm'].setdefault(key, 0.0)
@@ -293,6 +318,8 @@ def _apply(profile):
                            center_z=effective_center_z(profile), j1_backlash_deg=profile['j1_backlash_deg'],
                            center_xy=profile['center_xy'])
     pl.j1u.ENABLED = profile['j1_unidirectional']
+    pl.j1u.DIRECTION = profile['j1_direction']
+    pl.lib.TABLET_MODE = profile['tablet_mode']
 
 
 def activate(profile_id):
@@ -318,7 +345,7 @@ def update(profile_id, changes):
     current = load(profile_id)
     merged = dict(current)
     for key in ('name', 'manual_skew_mm', 'pen_lift_mm', 'drawing_rotation', 'center_z', 'center_z_adjust_mm', 'center_xy',
-                'j1_backlash_deg', 'j1_unidirectional'):
+                'j1_backlash_deg', 'j1_unidirectional', 'j1_direction', 'tablet_mode', 'tablet_orient'):
         if key in changes:
             merged[key] = changes[key]
     if 'corners' in changes:

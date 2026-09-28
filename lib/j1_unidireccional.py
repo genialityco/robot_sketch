@@ -40,8 +40,12 @@ import gcode_draw_lib as lib
 ENABLED = False
 
 # +1: con la pluma abajo la base solo gira en sentido antihorario visto desde
-# arriba (theta = atan2(y, x) creciente); -1: horario. Da igual cual: lo que
-# importa es que sea siempre el mismo.
+# arriba (theta = atan2(y, x) creciente, Y del robot creciente); -1: horario.
+# Lo elige el perfil (j1_direction). NO da igual: en el brazo real J1 se traba
+# girando hacia Y creciente (visto 2026-09-26 con "Ir encima": de abajo a la
+# derecha al centro va a tirones, al reves fluye), y con +1 cada tramo
+# arrancaba con una rayita (J1 pegado mientras X ya se movia) y terminaba
+# sin cerrar (J1 atrasado).
 DIRECTION = 1
 
 # Retrocesos de la base mas chicos que esto (mm de arco) no parten el trazo:
