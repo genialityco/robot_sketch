@@ -15,14 +15,68 @@
 import os
 
 GEMINI_IMAGE_MODEL = os.environ.get('GEMINI_IMAGE_MODEL', 'gemini-3.1-flash-lite-image')
-GEMINI_SKETCH_PROMPT = (
-    "de la imagen de esta persona crea un boceto de su rostro con pocos trazos, y con trazos definidos trazos negros y fondo blanco, sin relleno, lineas con la misma intensidad, ojos, nariz, y boca bien definidos que el rostro este centrado, sin accesorios como gafas"
+
+# Lo que mas importa en todos los estilos: que la persona se reconozca. Gemini
+# tiende a embellecer, "promediar" la cara o sacar las gafas; esto va al final
+# de cada prompt. Tambien pide ojos con lineas limpias (sin rayitas en el iris):
+# los ojos del boceto pasan tal cual al gcode.
+LIKENESS = (
+    " lo mas importante es que la persona sea reconocible, que se vea que es ella: conserva exactamente la "
+    "forma de su cara y de su mandibula, las proporciones y las distancias entre los rasgos, la forma, el "
+    "tamano y la inclinacion de los ojos, los parpados y la direccion de la mirada, la forma de la nariz, de "
+    "la boca y de las cejas, las orejas, el peinado y el nacimiento del pelo, la barba o el bigote, las gafas "
+    "si las tiene, los lunares y marcas que la identifican, su edad y su expresion. no la embellezcas ni la "
+    "idealices, no la rejuvenezcas, no cambies su contextura, no la conviertas en caricatura ni en otra "
+    "persona. los ojos con lineas limpias: el contorno de los parpados, el iris como un circulo y la pupila, "
+    "sin rayitas ni textura dentro del iris"
 )
 
+GEMINI_SKETCH_PROMPT = (
+    "de la imagen de esta persona crea un boceto de su rostro con pocos trazos, y con trazos definidos trazos "
+    "negros y fondo blanco, sin relleno, lineas con la misma intensidad, ojos, nariz, y boca bien definidos que "
+    "el rostro este centrado." + LIKENESS
+)
 
-def generate_sketch(image_path, out_path):
+# Estilo "trazo simple": retrato de linea continua (tipo "one line art"), con
+# pocas lineas largas y fluidas y rasgos minimos. Es mucho mas facil de
+# dibujar para el brazo: menos bajadas de pluma, menos trazos cortos, curvas
+# suaves. Se convierte a gcode pasando por SVG (ver lib/sketch_svg.py).
+GEMINI_LINE_ART_PROMPT = (
+    "convierte la foto de esta persona en un retrato de arte lineal minimalista, estilo dibujo de una sola "
+    "linea continua: pocas lineas largas, fluidas y suaves, negras, finas y todas del mismo grosor, sobre fondo "
+    "blanco. dibuja solo el contorno de la cara, la silueta del cabello con pocas lineas largas, el cuello y la "
+    "linea de los hombros. ojos, cejas, nariz y boca con un trazo minimo y simple cada uno. sin sombras, sin "
+    "relleno, sin texturas, sin sombreado ni rayado, sin trazos cortos, repetidos ni superpuestos, sin "
+    "garabatos. el rostro centrado y de frente." + LIKENESS
+)
+
+# Estilo "dibujo a lapiz" (para la tableta, ver retrato_lapiz.py): un dibujo
+# de lineas sin sombras, mas detallado que "trazo simple". De ahi sale el
+# recorrido del brazo, y la tableta dibuja exactamente esas lineas.
+GEMINI_PENCIL_PROMPT = (
+    "convierte la foto de esta persona en un dibujo a lapiz de lineas, realista y detallado: el contorno "
+    "de la cara, las orejas, los mechones del cabello, el cuello, los hombros y los pliegues principales de "
+    "la ropa. los rasgos con mucho detalle: ojos con parpado superior e inferior, iris redondo con la pupila "
+    "y un brillo, pestanas marcadas y cejas con la direccion del pelo; nariz con el puente, las aletas y las "
+    "dos fosas nasales; boca con el contorno de ambos labios, el arco del labio superior, la linea entre los "
+    "labios y las comisuras. solo lineas de grafito "
+    "limpias y continuas, del mismo grosor, sin sombreado, sin rellenos, sin tramado ni degradados. fondo "
+    "completamente blanco. solo cabeza y hombros, centrado y de frente. sin color, sin texto, sin marco ni "
+    "firma." + LIKENESS
+)
+
+# estilo -> (nombre para la interfaz, prompt)
+STYLES = {
+    'detallado': ('Detallado (boceto normal)', GEMINI_SKETCH_PROMPT),
+    'trazo': ('Trazo simple (lineas largas, mas facil de dibujar)', GEMINI_LINE_ART_PROMPT),
+    'lapiz': ('Dibujo a lapiz de lineas, detallado (para la tableta)', GEMINI_PENCIL_PROMPT),
+}
+DEFAULT_STYLE = 'detallado'
+
+
+def generate_sketch(image_path, out_path, style=DEFAULT_STYLE):
     """
-    Manda la imagen a Gemini con GEMINI_SKETCH_PROMPT y guarda la primera
+    Manda la imagen a Gemini con el prompt del estilo (ver STYLES) y guarda la primera
     imagen que devuelva en out_path. Lanza RuntimeError con un mensaje claro
     si falta la API key o si Gemini no devuelve ninguna imagen (p.ej. por
     cuota agotada, ver advertencia arriba).
@@ -42,7 +96,7 @@ def generate_sketch(image_path, out_path):
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model=GEMINI_IMAGE_MODEL,
-        contents=[GEMINI_SKETCH_PROMPT, types.Part.from_bytes(data=image_bytes, mime_type=mime)],
+        contents=[STYLES.get(style, STYLES[DEFAULT_STYLE])[1], types.Part.from_bytes(data=image_bytes, mime_type=mime)],
     )
 
     candidate = (response.candidates or [None])[0]

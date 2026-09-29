@@ -14,6 +14,17 @@
     stages.forEach((s) => el('stage-' + s).classList.toggle('hidden', s !== name));
   }
 
+  // motor del boceto: arranca en el de la calibracion (el que usa la pantalla del publico)
+  fetch('/api/styles', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+    ['engine-select', 'engine-select-2'].forEach((id) => { el(id).value = d.engine_default; });
+    if (!d.local_ready) {
+      ['engine-select', 'engine-select-2'].forEach((id) => {
+        const o = el(id).querySelector('option[value="local"]');
+        if (o) o.textContent += ' (falta el modelo)';
+      });
+    }
+  }).catch(() => {});
+
   async function api(path, options) {
     const res = await fetch(path, options);
     const data = await res.json().catch(() => ({}));
@@ -47,13 +58,15 @@
       case 'uploaded':
       case 'sketching':
         showStage('sketch');
+        el('style-select-2').value = job.style || 'detallado';
+        if (job.engine) el('engine-select-2').value = job.engine;
         el('img-original').src = job.original_url || '';
         el('img-sketch').src = job.sketch_url || '';
         crop = null;
         cropSyncedFor = null;
         renderCrop();
         el('sketch-status').textContent = job.stage === 'sketching'
-          ? 'Generando boceto con Gemini...' : '';
+          ? 'Generando boceto con ' + (job.engine_name || 'el motor elegido') + '...' : '';
         el('sketch-error').textContent = '';
         el('btn-sketch-accept').disabled = job.stage !== 'sketch_ready';
         el('btn-sketch-reject').disabled = true;
@@ -61,6 +74,8 @@
 
       case 'sketch_ready':
         showStage('sketch');
+        el('style-select-2').value = job.style || 'detallado';
+        if (job.engine) el('engine-select-2').value = job.engine;
         el('img-original').src = job.original_url || '';
         el('img-sketch').src = job.sketch_url || '';
         if (cropSyncedFor !== job.sketch_url) {
@@ -69,7 +84,7 @@
           cropSyncedFor = job.sketch_url;
         }
         renderCrop();
-        el('sketch-status').textContent = '';
+        el('sketch-status').textContent = job.sketch_note || '';
         el('sketch-error').textContent = '';
         el('btn-sketch-accept').disabled = false;
         el('btn-sketch-reject').disabled = false;
@@ -78,6 +93,8 @@
 
       case 'sketch_failed':
         showStage('sketch');
+        el('style-select-2').value = job.style || 'detallado';
+        if (job.engine) el('engine-select-2').value = job.engine;
         el('img-original').src = job.original_url || '';
         el('sketch-status').textContent = '';
         el('sketch-error').textContent = 'No se pudo generar el boceto: ' + job.sketch_error;
@@ -96,6 +113,8 @@
         // el timestamp evita que el navegador muestre el preview viejo cacheado al regenerar
         el('img-preview').src = job.preview_url || '';  // ya trae ?v= con la version del archivo
         el('preview-stats').textContent = describeStats(job.preview_stats);
+        el('svg-link-row').classList.toggle('hidden', !job.svg_url);
+        if (job.svg_url) el('svg-link').href = job.svg_url;
         el('gcode-error').textContent = '';
         el('detail-select-2').value = job.detail || 'medio';
         el('btn-gcode-rebuild').disabled = false;
@@ -145,10 +164,14 @@
 
   function describeStats(stats) {
     if (!stats) return '';
-    return stats.strokes + ' trazos, ' + stats.points + ' puntos, ' +
+    return (stats.style ? stats.style + ': ' : '') + stats.strokes + ' trazos, ' + stats.points + ' puntos, ' +
       stats.draw_mm + ' mm de dibujo, ' + stats.travel_mm + ' mm de viaje ' +
       '(~' + stats.estimated_minutes + ' min estimado, área ' +
-      stats.area_mm[0] + '×' + stats.area_mm[1] + ' mm)';
+      stats.area_mm[0] + '×' + stats.area_mm[1] + ' mm)' +
+      (stats.pencil ? '. ' + stats.pencil[0].toUpperCase() + stats.pencil.slice(1) : '') +
+      (stats.short_dropped ? '. Se omitieron ' + stats.short_dropped + ' rayas de menos de ' + stats.min_stroke_mm + ' mm' : '') +
+      (stats.eyes ? '. ' + stats.eyes[0].toUpperCase() +
+        stats.eyes.slice(1) + '.' : '');
   }
 
   function renderDrawProgress(job) {
@@ -172,6 +195,8 @@
     try {
       const form = new FormData();
       form.append('image', file);
+      form.append('style', el('style-select').value);
+      form.append('engine', el('engine-select').value);
       const job = await api('/api/jobs', { method: 'POST', body: form });
       jobId = job.id;
       let updated;
@@ -263,6 +288,7 @@
     try {
       const form = new FormData();
       form.append('detail', el('detail-select').value);
+      form.append('style', el('style-select-2').value);
       form.append('crop', crop ? JSON.stringify(crop) : '');
       const job = await api('/api/jobs/' + jobId + '/sketch/accept', { method: 'POST', body: form });
       render(job);
@@ -274,7 +300,10 @@
 
   el('btn-sketch-reject').addEventListener('click', async () => {
     try {
-      const job = await api('/api/jobs/' + jobId + '/sketch/reject', { method: 'POST' });
+      const form = new FormData();
+      form.append('style', el('style-select-2').value);
+      form.append('engine', el('engine-select-2').value);
+      const job = await api('/api/jobs/' + jobId + '/sketch/reject', { method: 'POST', body: form });
       render(job);
       startPolling();
     } catch (err) {

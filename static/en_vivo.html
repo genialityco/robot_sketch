@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Dibujo en vivo</title>
+<style>
+  :root {
+    --paper: #f4efe6;
+    --paper-2: #ebe3d6;
+    --card: #fffdf9;
+    --ink: #1d1b18;
+    --muted: #6d665c;
+    --line: #d9d0c2;
+    --accent: #b9542e;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: radial-gradient(120% 90% at 50% 0%, #faf6ef 0%, var(--paper) 55%, var(--paper-2) 100%);
+    color: var(--ink); font-family: var(--sans); overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+    display: flex; flex-direction: column; align-items: center;
+    padding: max(2.4vh, env(safe-area-inset-top)) 4vw max(2.4vh, env(safe-area-inset-bottom));
+    gap: 2vh;
+  }
+  body::before {   /* textura de papel muy suave */
+    content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .35;
+    background-image: radial-gradient(rgba(0,0,0,.035) 1px, transparent 1px);
+    background-size: 3px 3px;
+  }
+  header { text-align: center; flex: none; }
+  .brand { font: 600 clamp(11px, 1.4vmin, 15px)/1 var(--sans); letter-spacing: .32em; text-transform: uppercase; color: var(--muted); }
+  .brand b { color: var(--accent); }
+  h1 { font: 500 clamp(24px, 4.4vmin, 54px)/1.1 var(--serif); margin: 1.2vh 0 0; letter-spacing: -.01em; }
+
+  /* el lienzo: una hoja de papel con el dibujo, del tamano que entre */
+  #stage { flex: 1 1 auto; width: 100%; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  .sheet { position: relative; background: var(--card); border-radius: 4px;
+           box-shadow: 0 1px 1px rgba(0,0,0,.05), 0 14px 34px rgba(60,40,20,.14), 0 44px 90px -24px rgba(60,40,20,.28);
+           transition: box-shadow .6s ease; }
+  .sheet canvas { display: block; }
+  .sheet .tape { position: absolute; top: -13px; left: 50%; width: 120px; height: 26px; transform: translateX(-50%) rotate(-1.5deg);
+                 background: rgba(230,215,185,.75); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .sheet.done { box-shadow: 0 1px 1px rgba(0,0,0,.05), 0 14px 34px rgba(60,40,20,.16), 0 50px 100px -24px rgba(185,84,46,.35); }
+
+  /* espera */
+  #idle { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+          gap: 2vmin; color: var(--muted); text-align: center; padding: 6%; }
+  #idle svg { width: 60%; max-width: 360px; }
+  #idle path { fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+               stroke-dasharray: 1400; stroke-dashoffset: 1400; animation: draw 7s ease-in-out infinite; }
+  @keyframes draw { 0% { stroke-dashoffset: 1400; } 55%, 75% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -1400; } }
+  #idle p { font: 400 clamp(16px, 2.4vmin, 26px)/1.4 var(--serif); margin: 0; font-style: italic; }
+
+  /* avance */
+  footer { flex: none; width: min(92vw, 720px); }
+  .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 3px; transition: width .4s ease; }
+  .meta { display: flex; justify-content: space-between; align-items: baseline; margin-top: 1.2vh; gap: 12px;
+          color: var(--muted); font: 500 clamp(13px, 1.9vmin, 19px)/1 var(--sans); font-variant-numeric: tabular-nums; }
+  .meta b { font: 500 clamp(22px, 3.4vmin, 38px)/1 var(--serif); color: var(--ink); }
+
+  /* QR de descarga al terminar */
+  #qr { position: fixed; right: max(3vw, env(safe-area-inset-right)); bottom: max(3vh, env(safe-area-inset-bottom));
+        background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 12px 12px 10px; text-align: center;
+        box-shadow: 0 10px 30px rgba(60,40,20,.14); opacity: 0; transform: translateY(12px); transition: opacity .6s ease, transform .6s ease; }
+  #qr.on { opacity: 1; transform: none; }
+  #qr img { display: block; width: clamp(110px, 17vmin, 190px); height: auto; image-rendering: pixelated; }
+  #qr span { display: block; margin-top: 6px; font: 600 clamp(11px, 1.4vmin, 14px)/1.2 var(--sans); letter-spacing: .12em;
+             text-transform: uppercase; color: var(--accent); }
+
+  #fs-hint { position: fixed; left: 12px; bottom: 12px; z-index: 2; pointer-events: none;
+             background: rgba(30,30,30,.8); color: #fff; font-size: 14px; padding: 8px 14px; border-radius: 18px; white-space: nowrap; }
+  .hidden { display: none !important; }
+
+  @media (orientation: portrait) {
+    #qr { position: static; margin: 0 auto; }
+  }
+</style>
+</head>
+<body>
+<div id="fs-hint" class="hidden">Tocá la pantalla para verla completa</div>
+<header>
+  <div class="brand">Retrato <b>·</b> dibujado por un robot</div>
+  <h1 id="title">Esperando el próximo retrato</h1>
+</header>
+<div id="stage">
+  <div class="sheet" id="sheet">
+    <span class="tape" aria-hidden="true"></span>
+    <canvas id="c"></canvas>
+    <div id="idle">
+      <svg viewBox="0 0 420 180" aria-hidden="true"><path d="M20 120 C 60 40, 110 40, 130 95 S 190 160, 215 100 S 250 25, 290 60 S 330 150, 360 110 S 390 60, 400 80"/></svg>
+      <p>El brazo está listo para dibujar</p>
+    </div>
+  </div>
+</div>
+<footer id="footer">
+  <div class="bar"><i id="bar"></i></div>
+  <div class="meta"><b id="pct">0%</b><span id="time"></span></div>
+</footer>
+<div id="qr" aria-live="polite"><img id="qr-img" alt="Código QR para descargar el retrato"><span>Descargá tu retrato</span></div>
+
+<script>
+(function () {
+  'use strict';
+  // Lo mismo que dibuja /tablet (el recorrido que publica el servidor en
+  // /api/live), pero para mirar: la hoja derecha (se deshace la rotacion del
+  // perfil, como la imagen que se descarga), encuadrada sobre el dibujo mismo
+  // (sin los margenes de la tableta), con el avance y, al terminar, el QR.
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('c'), ctx = canvas.getContext('2d');
+  const ink = document.createElement('canvas'), ictx = ink.getContext('2d');   // lo dibujado hasta ahora
+
+  let live = { id: null, points: [], reveal: 0, done: true };
+  let pts = [];              // puntos en mm sobre la hoja ya derecha: [x, y, pluma, grosor]
+  let box = null;            // encuadre del dibujo (mm)
+  let shown = 0, drawnUpTo = 0, dpr = 1, scale = 1;
+  let lastOk = 0, dirty = true;
+  let frozenElapsed = null;  // el tiempo, fijo desde que el avance llego a 100%
+
+  // --- puntos: hoja derecha y encuadre -----------------------------------------
+  function prepare() {
+    const a = live.area_mm || [100, 100];
+    const turns = (((Math.round((live.rotation || 0) / 90)) % 4) + 4) % 4;
+    let w = a[0], h = a[1];
+    function upright(u, v) {   // punto de la hoja (u, v) -> mm sobre la hoja derecha
+      let x = u * a[0], y = (1 - v) * a[1], cw = a[0], ch = a[1];
+      for (let k = 0; k < turns; k++) {   // giro horario (como share.render_portrait)
+        const nx = ch - y, ny = x;
+        x = nx; y = ny; const t = cw; cw = ch; ch = t;
+      }
+      return [x, y];
+    }
+    pts = (live.points || []).map((p) => upright(p[0], p[1]).concat([p[2], p.length > 3 ? p[3] : 1]));
+    if (turns % 2) { const t = w; w = h; h = t; }
+    if (live.frame) {   // el marco del retrato (p. ej. 3:4): lo mismo que la imagen que se descarga
+      const f = live.frame, c0 = upright(f[0], f[2]), c1 = upright(f[1], f[3]);
+      box = { x0: Math.min(c0[0], c1[0]), y0: Math.min(c0[1], c1[1]), x1: Math.max(c0[0], c1[0]), y1: Math.max(c0[1], c1[1]) };
+    } else {            // sin marco: el dibujo con un poco de aire
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      pts.forEach((p) => { if (p[2]) { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]); } });
+      if (!isFinite(x0)) { x0 = 0; y0 = 0; x1 = w; y1 = h; }
+      const m = 0.07 * Math.max(x1 - x0, y1 - y0);
+      box = { x0: x0 - m, y0: y0 - m, x1: x1 + m, y1: y1 + m };
+    }
+    layout();
+  }
+
+  // la hoja: lo mas grande que entre, con la proporcion del dibujo
+  function layout() {
+    const st = $('stage').getBoundingClientRect();
+    const bw = box ? box.x1 - box.x0 : 3, bh = box ? box.y1 - box.y0 : 4;
+    const availW = st.width * 0.96, availH = st.height * 0.96;
+    const k = Math.min(availW / bw, availH / bh);
+    const cw = Math.max(10, Math.floor(bw * k)), ch = Math.max(10, Math.floor(bh * k));
+    dpr = window.devicePixelRatio || 1;
+    canvas.style.width = cw + 'px'; canvas.style.height = ch + 'px';
+    canvas.width = ink.width = Math.round(cw * dpr);
+    canvas.height = ink.height = Math.round(ch * dpr);
+    scale = k;
+    ictx.setTransform(1, 0, 0, 1, 0, 0); ictx.clearRect(0, 0, ink.width, ink.height);
+    drawnUpTo = 0;           // se redibuja lo hecho a la nueva escala, ya (sin esperar al proximo cuadro)
+    if (pts.length) render();
+    dirty = true;
+  }
+  new ResizeObserver(() => { if (box) layout(); }).observe($('stage'));
+
+  function toPx(x, y) { return [(x - box.x0) * scale, (y - box.y0) * scale]; }
+  function pointAt(s) {
+    const k = Math.min(Math.floor(s), pts.length - 1), t = s - k;
+    if (k + 1 >= pts.length) return pts[k];
+    return [pts[k][0] + (pts[k + 1][0] - pts[k][0]) * t, pts[k][1] + (pts[k + 1][1] - pts[k][1]) * t];
+  }
+  function jitter(k) { const x = Math.sin(k * 12.9898) * 43758.5453; return x - Math.floor(x) - 0.5; }
+
+  // grafito del tono del retrato (como /tablet)
+  const grains = {};
+  function grainFor(hex) {
+    if (!/^#[0-9a-f]{6}$/i.test(hex || '')) hex = '#2d2d2d';
+    if (grains[hex]) return grains[hex];
+    const rgb = [1, 3, 5].map((k) => parseInt(hex.slice(k, k + 2), 16));
+    const c = document.createElement('canvas');
+    c.width = c.height = 96;
+    const g = c.getContext('2d'), im = g.createImageData(96, 96);
+    for (let i = 0; i < im.data.length; i += 4) {
+      const f = 0.7 + Math.random() * 0.6;
+      im.data[i] = Math.min(255, rgb[0] * f); im.data[i + 1] = Math.min(255, rgb[1] * f); im.data[i + 2] = Math.min(255, rgb[2] * f);
+      im.data[i + 3] = 150 + Math.random() * 105;
+    }
+    g.putImageData(im, 0, 0);
+    return (grains[hex] = ictx.createPattern(c, 'repeat'));
+  }
+
+  // dibuja lo recorrido entre drawnUpTo y upTo (solo con la pluma abajo)
+  function grow(upTo) {
+    if (!box || upTo <= drawnUpTo) return;
+    const lineMm = live.line_mm || 1;
+    const pencil = live.render === 'pencil';
+    ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ictx.lineCap = 'round'; ictx.lineJoin = 'round';
+    ictx.strokeStyle = pencil ? grainFor(live.color_hex) : (live.color_hex || '#1d1b18');
+    for (let k = Math.floor(drawnUpTo); k < Math.min(Math.ceil(upTo), pts.length - 1); k++) {
+      if (!pts[k][2] || !pts[k + 1][2]) continue;
+      const a = pointAt(Math.max(k, drawnUpTo)), b = pointAt(Math.min(k + 1, upTo));
+      const [ax, ay] = toPx(a[0], a[1]), [bx, by] = toPx(b[0], b[1]);
+      const base = lineMm * scale * (pts[k + 1][3] || 1);
+      if (!pencil) {
+        ictx.globalAlpha = 1; ictx.lineWidth = Math.max(0.8, base);
+        ictx.beginPath(); ictx.moveTo(ax, ay); ictx.lineTo(bx, by); ictx.stroke();
+        continue;
+      }
+      const len = Math.hypot(bx - ax, by - ay) || 1, nx = -(by - ay) / len, ny = (bx - ax) / len;
+      const pressure = 0.82 + 0.18 * jitter(k * 7.1);
+      ictx.globalAlpha = 0.8 * pressure;
+      ictx.lineWidth = Math.max(0.7, base * (1 + 0.12 * jitter(k * 3.3)));
+      ictx.beginPath(); ictx.moveTo(ax, ay); ictx.lineTo(bx, by); ictx.stroke();
+      const o = jitter(k) * base * 1.2;   // segundo trazo apenas corrido, como la mano
+      ictx.globalAlpha = 0.22 * pressure;
+      ictx.lineWidth *= 0.7;
+      ictx.beginPath(); ictx.moveTo(ax + nx * o, ay + ny * o); ictx.lineTo(bx + nx * o, by + ny * o); ictx.stroke();
+    }
+    ictx.globalAlpha = 1;
+    drawnUpTo = upTo;
+  }
+
+  function render() {
+    grow(shown);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#fffdf9'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(ink, 0, 0);
+  }
+
+  // --- textos y avance ----------------------------------------------------------
+  function fmt(sec) {
+    sec = Math.max(0, Math.round(sec));
+    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  }
+  function status() {
+    const has = !!live.id && pts.length > 1;
+    const frac = has ? Math.min(1, shown / (pts.length - 1)) : 0;
+    $('idle').classList.toggle('hidden', has);
+    $('footer').style.visibility = has ? 'visible' : 'hidden';
+    $('sheet').classList.toggle('done', has && live.done);
+    $('bar').style.width = (100 * (live.done && has ? 1 : frac)).toFixed(1) + '%';
+    $('pct').textContent = has && live.done ? '100%' : Math.round(100 * frac) + '%';
+    let t = '';
+    if (has && live.elapsed != null) {
+      // al llegar a 100% el reloj se detiene (el brazo tarda un instante mas en darlo por terminado)
+      if (frozenElapsed === null && (live.done || frac >= 0.999)) frozenElapsed = live.elapsed;
+      const el = frozenElapsed !== null ? frozenElapsed : live.elapsed;
+      t = frozenElapsed !== null ? 'Terminado en ' + fmt(el) : fmt(el);
+      if (frozenElapsed === null && frac > 0.06) t += '  ·  faltan ~' + fmt(el * (1 - frac) / frac);
+    }
+    $('time').textContent = t;
+    $('title').textContent = !has ? 'Esperando el próximo retrato' : live.done ? '¡Retrato terminado!' : 'Dibujando…';
+    const r = live.result || {};
+    const qrOn = has && live.done && r.status === 'ready' && r.qr_url;
+    if (qrOn && $('qr-img').getAttribute('src') !== r.qr_url) $('qr-img').src = r.qr_url;
+    $('qr').classList.toggle('on', !!qrOn);
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch('/api/live' + (live.id ? '?have=' + live.id : ''), { cache: 'no-store' });
+      const d = await res.json();
+      if (d.id !== live.id) {           // otro dibujo: puntos nuevos
+        live = d; shown = 0; frozenElapsed = null; prepare();
+      } else {
+        Object.assign(live, d, { points: live.points });
+      }
+      lastOk = Date.now(); dirty = true;
+      status();
+    } catch (e) { /* sin conexion: se reintenta */ }
+    setTimeout(poll, 150);
+  }
+
+  function frame() {
+    const target = live.done ? pts.length - 1 : Math.min(live.reveal || 0, pts.length - 1);
+    if (Math.abs(target - shown) > 0.002) {
+      shown += (target - shown) * 0.35;   // suave, sin saltos
+      if (Math.abs(target - shown) < 0.01) shown = target;
+      dirty = true;
+    }
+    if (dirty && box) { dirty = false; render(); status(); }
+    requestAnimationFrame(frame);
+  }
+
+  // --- pantalla completa (un toque la activa, como /tablet) ---------------------
+  const root = document.documentElement;
+  const fsRequest = root.requestFullscreen || root.webkitRequestFullscreen;
+  function isFull() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+  function goFull() {
+    if (!fsRequest || isFull()) return;
+    try { const r = fsRequest.call(root, { navigationUI: 'hide' }); if (r && r.catch) r.catch(() => {}); } catch (e) { /* nada */ }
+  }
+  function syncFs() { $('fs-hint').classList.toggle('hidden', !fsRequest || isFull()); }
+  ['pointerup', 'touchend', 'click', 'keydown'].forEach((ev) => document.addEventListener(ev, goFull, true));
+  ['fullscreenchange', 'webkitfullscreenchange'].forEach((ev) => document.addEventListener(ev, syncFs));
+  setTimeout(() => { $('fs-hint').classList.add('hidden'); }, 8000);   // el aviso no queda tapando para siempre
+
+  box = { x0: 0, y0: 0, x1: 3, y1: 4 }; layout();
+  syncFs(); status(); poll(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

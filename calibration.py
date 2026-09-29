@@ -110,9 +110,129 @@ def _validate(profile):
         raise ValueError('el juego de la base no es un numero')
     if not 0 <= backlash <= J1_BACKLASH_MAX_DEG:
         raise ValueError('el juego de la base debe estar entre 0 y %g grados' % J1_BACKLASH_MAX_DEG)
+    center_xy = profile.get('center_xy')
+    if center_xy in (None, '', []):
+        center_xy = None
+    else:
+        try:
+            center_xy = [round(float(v), 2) for v in center_xy]
+        except (TypeError, ValueError):
+            raise ValueError('la posicion del centro debe ser dos numeros (x, y)')
+        if len(center_xy) != 2 or not all(math.isfinite(v) for v in center_xy):
+            raise ValueError('la posicion del centro debe ser dos numeros (x, y)')
+        ccx, ccy = _corners_center_xy(corners)
+        off = math.dist(center_xy, (ccx, ccy))
+        if off > CENTER_XY_MAX_OFFSET_MM:
+            raise ValueError('la punta esta en x %.1f, y %.1f, a %.0f mm del centro que dan las esquinas '
+                             '(x %.1f, y %.1f; se acepta hasta %d mm). O la punta no estaba en el centro de la '
+                             'hoja, o alguna esquina esta mal capturada: con "Ir encima" de cada esquina se ve '
+                             'cual no cae en su lugar.'
+                             % (center_xy[0], center_xy[1], off, ccx, ccy, CENTER_XY_MAX_OFFSET_MM))
     return dict(name=name, corners=corners, z_adjust_mm=z_adjust, center_z=center_z,
-                center_z_adjust_mm=center_adjust, manual_skew_mm=skew, pen_lift_mm=lift,
-                drawing_rotation=rotation, j1_backlash_deg=backlash)
+                center_z_adjust_mm=center_adjust, center_xy=center_xy, manual_skew_mm=skew, pen_lift_mm=lift,
+                drawing_rotation=rotation, j1_backlash_deg=backlash,
+                j1_unidirectional=bool(profile.get('j1_unidirectional', False)),
+                j1_direction=-1 if str(profile.get('j1_direction', 1)) == '-1' else 1,
+                tablet_mode=bool(profile.get('tablet_mode', False)),
+                tablet_orient=_tablet_orient(profile.get('tablet_orient')),
+                center_calib=_center_calib(profile.get('center_calib')))
+
+
+# ---------------------------------------------------------------------------
+# Calibracion desde el centro: se mide solo el centro de la hoja (con la punta
+# apoyada) y las esquinas se calculan con el tamano de la hoja. La hoja se
+# supone plana y horizontal; lo que cambia la altura es el brazo: por su peso,
+# la punta cae mas cuanto mas lejos de la base esta (sag_mm_per_10cm), asi que
+# las esquinas mas lejanas se mandan mas arriba y las mas cercanas mas abajo.
+# ---------------------------------------------------------------------------
+CENTER_CALIB_SIZE_CM = (2.0, 40.0)     # ancho y alto de la hoja
+CENTER_CALIB_SAG_LIMIT = 10.0          # mm por cada 10 cm de alcance
+REACH_MIN_MM, REACH_MAX_MM = 90.0, 280.0   # alcance horizontal razonable del myCobot 280 (desde la base)
+_CORNER_SIGNS = {'top_left': (1, 1), 'top_right': (1, -1), 'bottom_right': (-1, -1), 'bottom_left': (-1, 1)}  # (arriba, izquierda)
+
+
+def _num(value, what, lo, hi):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ValueError('%s no es un numero' % what)
+    if not math.isfinite(v) or not lo <= v <= hi:
+        raise ValueError('%s debe estar entre %g y %g' % (what, lo, hi))
+    return v
+
+
+def _center_calib(value):
+    """Parametros de la calibracion desde el centro (se guardan para recalcular), o None."""
+    if not value:
+        return None
+    center = value.get('center')
+    if not isinstance(center, (list, tuple)) or len(center) != 6:
+        raise ValueError('el centro necesita 6 valores (x, y, z, rx, ry, rz)')
+    return dict(center=[round(_num(v, 'el centro', -1000, 1000), 2) for v in center],
+                width_cm=round(_num(value.get('width_cm'), 'el ancho', *CENTER_CALIB_SIZE_CM), 2),
+                height_cm=round(_num(value.get('height_cm'), 'el alto', *CENTER_CALIB_SIZE_CM), 2),
+                angle_deg=round(_num(value.get('angle_deg', 0), 'el giro de la hoja', -180, 180), 2),
+                sag_mm_per_10cm=round(_num(value.get('sag_mm_per_10cm', 0), 'la caida de Z',
+                                           -CENTER_CALIB_SAG_LIMIT, CENTER_CALIB_SAG_LIMIT), 2))
+
+
+def corners_from_center(params):
+    """
+    params: center [x, y, z, rx, ry, rz] (la punta apoyada en el centro de la
+    hoja), width_cm, height_cm, angle_deg (giro de la hoja: 0 = su "arriba"
+    apunta lejos del robot, +X; positivo = girada hacia la izquierda del robot)
+    y sag_mm_per_10cm (cuanto cae la punta por el peso del brazo por cada 10 cm
+    mas lejos de la base). Devuelve (corners, info): las 4 esquinas con la
+    orientacion del centro, y por esquina su distancia a la base y la
+    correccion de Z, con avisos si alguna queda fuera del alcance del brazo.
+    """
+    p = _center_calib(params)
+    cx, cy, cz = p['center'][:3]
+    th = math.radians(p['angle_deg'])
+    up = (math.cos(th), math.sin(th))          # hacia el lado de la hoja lejos del robot
+    left = (-math.sin(th), math.cos(th))       # hacia la izquierda (vista desde el robot)
+    half_w, half_h = p['width_cm'] * 5.0, p['height_cm'] * 5.0   # mitades, en mm
+    r_center = math.hypot(cx, cy)
+    corners, info, warnings = {}, {}, []
+    for key, (su, sl) in _CORNER_SIGNS.items():
+        x = cx + su * half_h * up[0] + sl * half_w * left[0]
+        y = cy + su * half_h * up[1] + sl * half_w * left[1]
+        reach = math.hypot(x, y)
+        dz = p['sag_mm_per_10cm'] * (reach - r_center) / 100.0   # mas lejos: cae mas -> se manda mas arriba
+        corners[key] = [round(x, 2), round(y, 2), round(cz + dz, 2)] + list(p['center'][3:])
+        info[key] = dict(reach_mm=round(reach, 1), dz_mm=round(dz, 2))
+        if not REACH_MIN_MM <= reach <= REACH_MAX_MM:
+            warnings.append('la esquina %s queda a %.0f mm de la base (el brazo llega bien entre %d y %d mm)'
+                            % (CORNER_LABELS[key], reach, REACH_MIN_MM, REACH_MAX_MM))
+    return corners, dict(corners=info, center_reach_mm=round(r_center, 1), warnings=warnings, params=p)
+
+
+# Donde queda, en la pantalla de la tableta, el lado de la hoja lejos del robot
+# ("arriba" de las esquinas). Es del perfil (depende de como se puso la tableta
+# al calibrarlo): /tablet lo toma del perfil activo. None = el ajuste de la tableta.
+TABLET_ORIENTS = ('arriba', 'derecha', 'abajo', 'izquierda')
+
+
+def _tablet_orient(value):
+    if value in (None, ''):
+        return None
+    if value not in TABLET_ORIENTS:
+        raise ValueError('orientacion de la tableta invalida: %s' % value)
+    return value
+
+
+def active_tablet_orient():
+    profile_id = active_id()
+    return load(profile_id).get('tablet_orient') if profile_id else None
+
+
+# Un centro capturado mas lejos que esto del que dan las esquinas no es un
+# error de medicion: la punta no estaba en el centro de la hoja.
+CENTER_XY_MAX_OFFSET_MM = 20
+
+
+def _corners_center_xy(corners):
+    return (sum(corners[k][0] for k in CORNERS) / 4, sum(corners[k][1] for k in CORNERS) / 4)
 
 
 # Compensacion del juego de J1 (ver gcode_draw_lib.J1Backlash). Medido ~1.5
@@ -161,6 +281,8 @@ def center_target(profile):
     es la del centro si esta medida, o la del plano de las esquinas si no."""
     c = effective_corners(profile)
     xyz = [sum(c[k][i] for k in CORNERS) / 4 for i in range(3)]
+    if profile.get('center_xy') is not None:
+        xyz[0], xyz[1] = profile['center_xy']
     center_z = effective_center_z(profile)
     if center_z is not None:
         xyz[2] = center_z
@@ -224,8 +346,14 @@ def load(profile_id):
     data['id'] = profile_id
     data.setdefault('drawing_rotation', 0)
     data.setdefault('center_z', None)
+    data.setdefault('center_xy', None)
     data.setdefault('center_z_adjust_mm', 0.0)
     data.setdefault('j1_backlash_deg', 0.0)
+    data.setdefault('j1_unidirectional', False)
+    data.setdefault('j1_direction', 1)
+    data.setdefault('tablet_mode', False)
+    data.setdefault('tablet_orient', None)
+    data.setdefault('center_calib', None)
     data.setdefault('z_adjust_mm', {})  # perfiles guardados antes de existir el ajuste
     for key in CORNERS:
         data['z_adjust_mm'].setdefault(key, 0.0)
@@ -258,7 +386,11 @@ def _apply(profile):
     c = effective_corners(profile)
     pl.lib.set_calibration(c['top_left'], c['top_right'], c['bottom_right'], c['bottom_left'],
                            manual_skew_mm=profile['manual_skew_mm'], pen_lift_mm=profile['pen_lift_mm'],
-                           center_z=effective_center_z(profile), j1_backlash_deg=profile['j1_backlash_deg'])
+                           center_z=effective_center_z(profile), j1_backlash_deg=profile['j1_backlash_deg'],
+                           center_xy=profile['center_xy'])
+    pl.j1u.ENABLED = profile['j1_unidirectional']
+    pl.j1u.DIRECTION = profile['j1_direction']
+    pl.lib.TABLET_MODE = profile['tablet_mode']
 
 
 def activate(profile_id):
@@ -283,8 +415,9 @@ def create(name, copy_from=None):
 def update(profile_id, changes):
     current = load(profile_id)
     merged = dict(current)
-    for key in ('name', 'manual_skew_mm', 'pen_lift_mm', 'drawing_rotation', 'center_z', 'center_z_adjust_mm',
-                'j1_backlash_deg'):
+    for key in ('name', 'manual_skew_mm', 'pen_lift_mm', 'drawing_rotation', 'center_z', 'center_z_adjust_mm', 'center_xy',
+                'j1_backlash_deg', 'j1_unidirectional', 'j1_direction', 'tablet_mode', 'tablet_orient',
+                'center_calib'):
         if key in changes:
             merged[key] = changes[key]
     if 'corners' in changes:
@@ -330,6 +463,10 @@ def describe(profile):
     center_z = effective_center_z(profile)
     diag['plane_center_z'] = round(plane_center_z, 2)
     diag['center_offset_mm'] = None if center_z is None else round(center_z - plane_center_z, 1)
+    cx, cy = _corners_center_xy(c)
+    diag['corners_center_xy'] = [round(cx, 2), round(cy, 2)]
+    diag['center_xy_offset_mm'] = (None if profile.get('center_xy') is None else
+                                   round(math.dist(profile['center_xy'], (cx, cy)), 1))
     return dict(profile, effective_corners=c, diagnostics=diag, active=(profile['id'] == active_id()),
                 drawing_rotation_resolved=drawing_rotation_deg(profile))
 
@@ -342,6 +479,67 @@ def area_mm():
 # ---------------------------------------------------------------------------
 # Acciones sobre el brazo (siempre dentro de robot.use(...))
 # ---------------------------------------------------------------------------
+# Parametros internos de los servos (direcciones de pymycobot/demo/change_pid.py,
+# la herramienta oficial de Elephant). Valores de referencia de esa demo:
+# "alta precision" P10 D0 I1 arranque0 zm3/3; "estabilizar" J1-J3 P5 D15 I0.
+# P baja + I=0 = el servo cede al empujarlo y se queda corto antes del punto
+# pedido, del lado del que venia (se ve como juego aunque no lo sea).
+SERVO_PARAMS = [(21, 'P'), (22, 'D'), (23, 'I'), (24, 'arranque'), (26, 'zona_muerta_1'), (27, 'zona_muerta_2')]
+
+
+def read_servo_params(mc):
+    """Solo LEE los parametros de los 6 servos (no escribe nada en el brazo).
+    Devuelve {1: {'P': 10, ...}, ...}; None donde el servo no respondio."""
+    out = {}
+    for servo in range(1, 7):
+        row = {}
+        for address, name in SERVO_PARAMS:
+            try:
+                value = mc.get_servo_data(servo, address)
+            except Exception:
+                value = None
+            row[name] = value if isinstance(value, int) and value >= 0 else None
+            time.sleep(0.05)
+        out[servo] = row
+    return out
+
+
+# Ajuste de J1 (base). Leidos 2026-09-26: J1 P=15 D=20 I=0, contra P=32 en J2
+# y J3 -- la base tenia la mitad de rigidez que los ejes que dibujan bien, y
+# cedia ~1 cm al empujarla con el brazo trabado. Solo se deja tocar P, D e I
+# de J1, en rangos cerca de los presets oficiales (change_pid.py y la GUI de
+# fabrica usan P 5-32, D 0-25, I 0-1): valores mucho mas altos pueden hacer
+# vibrar el eje. Lo que se escribe queda guardado en el servo (sobrevive al
+# apagado); J1_ORIGINAL permite volver atras.
+J1_TUNABLE = {'P': (21, 5, 40), 'D': (22, 0, 40), 'I': (23, 0, 3)}   # nombre: (direccion, min, max)
+J1_ORIGINAL = {'P': 15, 'D': 20, 'I': 0}
+
+
+def write_j1_param(mc, name, value):
+    """Escribe un parametro de J1 y lo verifica leyendolo de vuelta."""
+    if name not in J1_TUNABLE:
+        raise ValueError('parametro invalido: solo se puede cambiar %s de J1' % ', '.join(J1_TUNABLE))
+    address, lo, hi = J1_TUNABLE[name]
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ValueError('el valor de %s debe ser un numero entero' % name)
+    if not lo <= value <= hi:
+        raise ValueError('%s de J1 debe estar entre %d y %d' % (name, lo, hi))
+    mc.set_servo_data(1, address, value)
+    time.sleep(0.2)
+    read = mc.get_servo_data(1, address)
+    if read != value:
+        raise ValueError('se escribio %s=%d en J1 pero el servo devolvio %r: el cambio no quedo aplicado'
+                         % (name, value, read))
+    return value
+
+
+def restore_j1(mc):
+    for name, value in J1_ORIGINAL.items():
+        write_j1_param(mc, name, value)
+
+
 def read_coords(mc, attempts=4):
     """get_coords a veces devuelve -1 o una lista vacia/en cero mientras el
     brazo se asienta o con los servos liberados; se reintenta un poco."""

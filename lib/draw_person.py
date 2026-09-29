@@ -424,22 +424,21 @@ def _connections_to_polylines(edges):
     return paths
 
 
-def face_landmark_strokes(img):
-    """Usa MediaPipe Face Landmarker para trazar ojos, cejas, iris, nariz y labios con
-    precision anatomica. Canny no distingue un ojo de una arruga; los landmarks si.
-    Devuelve lista de arrays (x, y) en pixeles, o [] si no hay mediapipe, falla la
-    descarga del modelo, o no se detecta ninguna cara."""
+def face_landmark_points(img):
+    """Los 478 landmarks de MediaPipe Face Landmarker (cara + iris) en pixeles,
+    o None si no hay mediapipe, falla la descarga del modelo, o no se detecta
+    ninguna cara."""
     try:
         import mediapipe as mp
         from mediapipe.tasks.python import vision
         from mediapipe.tasks.python.core.base_options import BaseOptions
     except ImportError:
-        return []
+        return None
     try:
         model_path = _ensure_face_model()
     except Exception as e:
         print("[info] no se pudo obtener el modelo de rostro de mediapipe:", e)
-        return []
+        return None
 
     h, w = img.shape[:2]
     mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
@@ -448,9 +447,21 @@ def face_landmark_strokes(img):
     with vision.FaceLandmarker.create_from_options(options) as landmarker:
         result = landmarker.detect(mp_img)
     if not result.face_landmarks:
-        return []
+        return None
+    return [(p.x * w, p.y * h) for p in result.face_landmarks[0]]
 
-    pts = [(p.x * w, p.y * h) for p in result.face_landmarks[0]]
+
+def face_landmark_strokes(img, pts=None):
+    """Usa MediaPipe Face Landmarker para trazar ojos, cejas, iris, nariz y labios con
+    precision anatomica. Canny no distingue un ojo de una arruga; los landmarks si.
+    Devuelve lista de arrays (x, y) en pixeles, o [] si no hay mediapipe, falla la
+    descarga del modelo, o no se detecta ninguna cara. pts: landmarks ya
+    calculados con face_landmark_points (para no correr MediaPipe dos veces)."""
+    if pts is None:
+        pts = face_landmark_points(img)
+    if not pts:
+        return []
+    from mediapipe.tasks.python import vision
     C = vision.FaceLandmarksConnections
     feature_sets = [C.FACE_LANDMARKS_LEFT_EYE, C.FACE_LANDMARKS_RIGHT_EYE,
                      C.FACE_LANDMARKS_LEFT_EYEBROW, C.FACE_LANDMARKS_RIGHT_EYEBROW,

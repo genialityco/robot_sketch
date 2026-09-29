@@ -30,15 +30,45 @@
     </section>
 
     <section class="stage">
+      <h2>Método del boceto (foto con la cámara)</h2>
+      <p class="status">Con qué se pasa a dibujo la foto que la persona se toma con la cámara en la pantalla del público (<code>/resultado</code>). Se aplica desde la próxima foto. También es el que aparece elegido por defecto en la pestaña Dibujar.</p>
+      <div class="row fields">
+        <label>Método <select id="cal-sketch-engine"></select></label>
+      </div>
+      <ul class="status engine-help">
+        <li><strong>Local (U²-Net)</strong>: en esta PC, sin internet, en ~1 segundo. Dibuja cabeza y cuello; los ojos se dibujan a partir de la cara detectada.</li>
+        <li><strong>Gemini</strong>: en la nube, más elaborado y parecido (hombros, ropa, ojos del propio dibujo). Tarda más y necesita internet y la clave de la API.</li>
+        <li><strong>Lápiz de OpenCV</strong>: sin IA, instantáneo; más básico.</li>
+      </ul>
+      <p class="status">Si Local o Gemini fallan, se usa el otro, y como último recurso el lápiz de OpenCV.</p>
+      <p class="status" id="cal-sketch-engine-msg"></p>
+      <p class="warning" id="cal-sketch-engine-warn"></p>
+    </section>
+
+    <section class="stage">
       <h2>Brazo</h2>
       <p class="status" id="cal-robot-status"></p>
       <div class="row">
         <button id="cal-release">Liberar brazo</button>
         <button id="cal-lock">Trabar brazo</button>
         <button id="cal-read" class="secondary">Leer posición</button>
+        <button id="cal-servos" class="secondary" title="Solo lee P, D, I, fuerza de arranque y zona muerta de cada servo: no cambia nada en el brazo">Leer parámetros de servos</button>
         <button id="cal-disconnect" class="secondary">Cerrar conexión</button>
       </div>
       <p class="warning">Sostené el brazo antes de liberarlo: sin torque cae por su propio peso.</p>
+      <div class="row fields">
+        <label>Parámetro de J1 (base)
+          <select id="cal-j1-param">
+            <option value="P">P — rigidez (5 a 40)</option>
+            <option value="D">D — amortiguación (0 a 40)</option>
+            <option value="I">I — corrige lo que falta al llegar (0 a 3)</option>
+          </select>
+        </label>
+        <label>Valor <input type="number" id="cal-j1-value" step="1" min="0" max="40"></label>
+        <button id="cal-j1-write" class="secondary">Escribir en J1</button>
+        <button id="cal-j1-restore" class="secondary">Restaurar J1 (P 15, D 20, I 0)</button>
+      </div>
+      <p class="status">Cambia la configuración del servo de la base y queda guardada en él (sobrevive al apagado). De a un parámetro: si el brazo vibra o zumba, bajalo o restaurá. Después de cada cambio, volvé a ajustar "Juego de la base".</p>
       <pre id="cal-coords" class="coords"></pre>
     </section>
 
@@ -51,11 +81,34 @@
         <li>Verificá con <em>Ir encima</em> (queda 10 mm arriba) o <em>Tocar</em> (baja hasta el papel).</li>
       </ol>
       <p class="status">"Arriba" es el lado de la hoja más lejos del robot.</p>
+      <div class="corner center-card" id="cal-fc">
+        <h3>Calibrar desde el centro (más rápido)</h3>
+        <p class="status">En vez de capturar las 4 esquinas: apoyá la punta en el centro de la hoja (liberá el brazo sosteniéndolo), tocá <em>Leer posición del brazo</em>, poné el tamaño de la hoja y tocá <em>Calcular esquinas y guardar</em>. La hoja se toma plana y horizontal; la <em>caída de Z</em> compensa que la punta cae más cuanto más lejos de la base está, por el peso del brazo: si las esquinas lejanas aprietan de más (o no llegan), subí (o bajá) ese valor y recalculá. Después verificá cada esquina con <em>Ir encima</em> / <em>Tocar</em>.</p>
+        <div class="zadj">
+          <label>Centro X <input type="number" step="0.1" id="cal-fc-x" placeholder="leer del brazo"></label>
+          <label>Centro Y <input type="number" step="0.1" id="cal-fc-y" placeholder="leer del brazo"></label>
+          <label>Centro Z <input type="number" step="0.1" id="cal-fc-z" placeholder="leer del brazo"></label>
+        </div>
+        <div class="zadj">
+          <label>Ancho de la hoja (cm) <input type="number" step="0.1" min="2" max="40" id="cal-fc-w"></label>
+          <label>Alto de la hoja (cm) <input type="number" step="0.1" min="2" max="40" id="cal-fc-h" title="De abajo (cerca del robot) hacia arriba (lejos del robot)."></label>
+          <label>Giro de la hoja (°) <input type="number" step="1" min="-180" max="180" id="cal-fc-angle" title="0 = los bordes de la hoja alineados con el robot (su &quot;arriba&quot; apunta lejos de la base). Positivo = girada hacia la izquierda del robot."></label>
+          <label>Caída de Z (mm cada 10 cm) <input type="number" step="0.1" min="-10" max="10" id="cal-fc-sag" title="Cuánto cae la punta por el peso del brazo por cada 10 cm más lejos de la base. Las esquinas más lejanas que el centro se mandan más arriba en esa proporción, y las más cercanas más abajo. 0 = sin corrección."></label>
+        </div>
+        <div class="row">
+          <button id="cal-fc-read" class="secondary">Leer posición del brazo</button>
+          <button id="cal-fc-preview" class="secondary">Ver cálculo</button>
+          <button id="cal-fc-apply">Calcular esquinas y guardar</button>
+        </div>
+        <p class="status" id="cal-fc-info"></p>
+      </div>
       <div class="corner-grid" id="cal-corners"></div>
       <div class="corner center-card">
-        <h3>Centro de la hoja (solo altura)</h3>
-        <p class="status">Opcional. Corrige la altura en el medio de la hoja cuando no es plana entre las esquinas (se nota si un ajuste de altura cambia el contorno pero no el dibujo). Solo usa la Z: no cambia la forma ni el tamaño del área, y no afecta las esquinas ni el contorno. Para capturarlo, apoyá la punta en el centro de la hoja con el brazo liberado.</p>
+        <h3>Centro de la hoja (posición y altura)</h3>
+        <p class="status">Opcional. Corrige el medio del dibujo: la posición, si el dibujo sale corrido respecto del centro real de la hoja, y la altura, si la hoja no es plana entre las esquinas. No cambia el tamaño del área ni afecta las esquinas ni el contorno. Para capturarlo: marcá el centro real de la hoja (cruzá las dos diagonales con una regla), tocá <em>Ir encima</em>, liberá el brazo sosteniéndolo, apoyá la punta justo en la marca y tocá <em>Capturar</em>. Después trabá el brazo, guardá y verificá con <em>Tocar</em>.</p>
         <div class="zadj">
+          <label>X medida <input type="number" step="0.1" id="cal-center-x" placeholder="sin medir"></label>
+          <label>Y medida <input type="number" step="0.1" id="cal-center-y" placeholder="sin medir"></label>
           <label>Z medida <input type="number" step="0.1" id="cal-center-z" placeholder="sin medir"></label>
           <label>Ajuste de altura (mm) <input type="number" step="0.1" min="-10" max="10" id="cal-center-adj" title="Negativo = sube (-1 = 1 mm más arriba). Positivo = baja (más presión)."></label>
           <span class="status" id="cal-center-eff"></span>
@@ -71,6 +124,23 @@
         <label>Nombre <input type="text" id="cal-name" maxlength="60"></label>
         <label>Ajuste fino de inclinación (mm) <input type="number" id="cal-skew" step="0.5"></label>
         <label>Levantado de pluma (mm) <input type="number" id="cal-lift" step="1"></label>
+        <label class="check" title="Parte cada trazo donde la base cambiaría de sentido y dibuja todos los tramos girando hacia el mismo lado, llegando a cada uno por el aire: el juego de la base deja de achicar los rasgos, sin tener que medirlo. Más levantadas de pluma. Usalo con el juego de la base en 0."><input type="checkbox" id="cal-unidir"> Dibujar con la base en un solo sentido</label>
+        <label class="check" title="Para un perfil calibrado sobre la tableta (página /tablet): entre trazos la punta sube apenas 2 mm, sin esperas, con líneas continuas; el dibujo dura lo que dura el recorrido. No usar con papel."><input type="checkbox" id="cal-tablet-mode"> Modo tableta (sube 2 mm entre trazos, rápido)</label>
+        <label title="Cómo está puesta la tableta para este perfil: en qué lado de SU pantalla queda el lado de la hoja lejos del robot. La página /tablet lo toma del perfil activo. Para comprobarlo: la cruz &quot;arriba izquierda&quot; de la tableta tiene que quedar en la esquina lejos del robot, a su izquierda, y al dibujar el contorno la traza tiene que seguir a la punta.">Tableta: el lado lejos del robot queda
+          <select id="cal-tablet-orient">
+            <option value="">(lo que diga la tableta en ⚙)</option>
+            <option value="arriba">arriba de su pantalla</option>
+            <option value="derecha">a la derecha de su pantalla</option>
+            <option value="abajo">abajo de su pantalla</option>
+            <option value="izquierda">a la izquierda de su pantalla</option>
+          </select>
+        </label>
+        <label>Sentido de la base al dibujar
+          <select id="cal-j1-direction" title="Con la casilla anterior prendida: hacia qué lado gira la base mientras la pluma dibuja. Elegí el lado en que la base se mueve fluida (probalo con Ir encima entre esquinas).">
+            <option value="1">Y creciente (antihorario visto desde arriba)</option>
+            <option value="-1">Y decreciente (horario visto desde arriba)</option>
+          </select>
+        </label>
         <label>Juego de la base (°) <input type="number" id="cal-backlash" step="0.1" min="0" max="4" title="Compensa el juego de la articulación de la base (J1): cuánto gira sin mover la pluma al cambiar de sentido. 0 = sin compensar. Medido ~1.5°."></label>
         <label>Orientación del dibujo
           <select id="cal-rotation">
@@ -99,9 +169,91 @@
         <button id="cal-test-face" title="Cara, ojos, nariz y boca, girados según la orientación guardada del perfil activo">Dibujar rostro</button>
         <button id="cal-test-precision" class="secondary">Prueba de precisión</button>
       </div>
+      <h3>Ojos de los retratos</h3>
+      <p class="status">La prueba de ojos dibuja todos los estilos, numerados, al tamaño de un ojo de retrato. Elegí el que mejor salga: en cada retrato se borran los ojos del boceto y se dibuja ese estilo, ubicado y ajustado a los de la persona (ancho, inclinación, apertura y hacia dónde mira). Vale para los retratos que generes desde ahora.</p>
+      <div class="row fields">
+        <button id="cal-test-eyes">Dibujar prueba de ojos</button>
+        <button id="cal-test-dots" class="secondary" title="Un ojo de 70 mm de ancho hecho solo con puntos: la pluma baja y sube en el mismo lugar. Unos 76 puntos, varios minutos.">Dibujar ojo de puntos</button>
+        <label>Estilo de ojos en los retratos
+          <select id="cal-eye-style"></select>
+        </label>
+      </div>
+      <h3>Tableta</h3>
+      <p class="status">Para dibujar sobre una tableta en vez de papel: abrí <code>/tablet</code> en la tableta. El grosor vale para todos los estilos (también el dibujo a lápiz) y para la imagen que se descarga, y se aplica al instante en la tableta, aunque esté dibujando. Para el lápiz se ve natural entre 0.4 y 1 mm.</p>
+      <p class="status">Escaneá el código desde la tableta o la pantalla del público para abrir su página. La tableta y esta PC tienen que estar en la misma red (Wi-Fi o hotspot). Si cambiás de red, tocá "Actualizar direcciones". Si la página no abre, marcá la red como privada en Windows o permití Python en el firewall.</p>
+      <div class="row"><button id="cal-conn-refresh" class="secondary">Actualizar direcciones</button></div>
+      <div id="cal-conn" class="conn-grid"></div>
+      <div class="row fields">
+        <label>Grosor del trazo en la tableta (mm) <input type="number" id="cal-tablet-line" step="0.1" min="0.2" max="8" title="Vale para todos los estilos, incluido el dibujo a lápiz, y para la imagen que se descarga con el QR. Para el lápiz se ve natural entre 0.4 y 1 mm."></label>
+      </div>
+      <h3>Rostro real con puntos</h3>
+      <p class="status">Dibuja el rostro de una foto solo con puntos: más puntos donde la foto es más oscura (pelo, ojos, cejas, boca, sombras). Primero generá la vista previa y, si te gusta, dibujalo. Si no elegís foto, se usa la última que subiste en "Dibujar".</p>
+      <div class="row fields">
+        <label>Foto (opcional) <input type="file" id="cal-stipple-file" accept="image/png,image/jpeg,image/webp"></label>
+        <label>Cantidad de puntos
+          <select id="cal-stipple-dots">
+            <option value="250">250 (rápido, más suelto)</option>
+            <option value="400" selected>400</option>
+            <option value="600">600 (más detalle, más lento)</option>
+            <option value="800">800</option>
+          </select>
+        </label>
+        <label>Método
+          <select id="cal-stipple-method">
+            <option value="voronoi">Voronoi (puntos orgánicos, parejos)</option>
+            <option value="atkinson">Atkinson (trama tipo grabado, luces limpias)</option>
+            <option value="floyd">Floyd-Steinberg (trama, más medios tonos)</option>
+          </select>
+        </label>
+        <button id="cal-stipple-preview" class="secondary">Generar vista previa</button>
+        <button id="cal-test-stipple" disabled>Dibujar rostro con puntos</button>
+      </div>
+      <p class="status" id="cal-stipple-info"></p>
+      <img id="cal-stipple-img" class="hidden" alt="Vista previa del rostro con puntos" style="max-width: 420px; width: 100%;">
       <p class="status">La prueba de precisión mide, en 9 puntos de la hoja, a cuántos mm del punto pedido queda realmente el brazo: con la pluma en el aire, apoyada, y después de movimientos cortos de 5 mm. Sirve para saber si los rasgos chicos (ojos, boca) se deforman por la fricción del esfero, por el juego de los servos o por un corrimiento fijo. Deja unas crucecitas en el papel (~2 min).</p>
       <progress id="cal-test-progress" value="0" max="100" class="hidden"></progress>
       <p id="cal-test-message" class="status"></p>
+    </section>
+
+    <section class="stage">
+      <h2>Marco del retrato</h2>
+      <p class="status">Cada retrato terminado se pone dentro del marco (en su hueco del medio) y se muestra y se descarga así, en el tamaño justo del papel 10×15 de la Canon SELPHY CP1500: <strong>100 × 148 mm, 1181 × 1748 px a 300 dpi</strong>. Para imprimir, pasá la imagen descargada a la app de Canon: entra exacta, sin recortes.</p>
+      <div class="print-grid">
+        <figure class="print-preview"><img id="fr-preview" alt="Vista previa del marco"><figcaption id="fr-preview-cap">Marco</figcaption></figure>
+        <div>
+          <div class="row">
+            <label class="btn-file">Cambiar marco… <input type="file" id="fr-file" accept="image/png,image/jpeg"></label>
+            <button id="fr-none" class="secondary">Sin marco</button>
+            <button id="fr-sample" class="secondary">Probar con el último retrato</button>
+          </div>
+          <p class="status" id="fr-status"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="stage">
+      <h2>Rutinas de movimiento</h2>
+      <p class="status">Movimientos para el público (saludo, invitación…). Para enseñar una rutina: elegila, tocá "Liberar brazo", llevá el brazo con la mano a la primera pose y tocá "Agregar posición actual"; repetí con cada pose, en orden. Cada paso guarda los ángulos de las 6 articulaciones, la velocidad para llegar (1 a 100) y cuánto espera ahí (s). Al ejecutar, el brazo se traba y va de pose en pose.</p>
+      <p class="warning">Sostené el brazo antes de liberarlo. Antes de ejecutar, dejá libre el espacio alrededor del brazo: entre una pose y la siguiente va por el camino más corto de cada articulación, no por el que lo llevaste a mano.</p>
+      <div class="row fields">
+        <label>Rutina <select id="rt-select"></select></label>
+        <button id="rt-new" class="secondary">Nueva rutina</button>
+        <button id="rt-rename" class="secondary">Renombrar</button>
+        <button id="rt-delete" class="secondary danger">Borrar rutina</button>
+      </div>
+      <div class="row">
+        <button id="rt-release">Liberar brazo</button>
+        <button id="rt-capture">Agregar posición actual</button>
+        <button id="rt-lock" class="secondary">Trabar brazo</button>
+      </div>
+      <ol id="rt-steps" class="rt-steps"></ol>
+      <p class="status" id="rt-empty"></p>
+      <div class="row fields">
+        <label>Repeticiones <input type="number" id="rt-repeat" value="1" min="1" max="20" step="1"></label>
+        <button id="rt-play">Ejecutar rutina</button>
+        <button id="rt-stop" class="secondary danger">Detener</button>
+      </div>
+      <p class="status" id="rt-message"></p>
     </section>
 
     <p id="cal-error" class="error" role="alert"></p>
@@ -112,8 +264,21 @@
     <section id="stage-upload" class="stage">
       <h2>1. Subir foto</h2>
       <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp">
-      <label for="own-sketch-input">¿Ya tenés un boceto hecho? Subilo acá y te saltás la generación con Gemini (opcional):</label>
+      <label for="own-sketch-input">¿Ya tenés un boceto hecho? Subilo acá y te saltás la generación del boceto (opcional):</label>
       <input type="file" id="own-sketch-input" accept="image/png,image/jpeg,image/webp">
+      <label for="engine-select">Motor del boceto (cómo se pasa la foto a dibujo):</label>
+      <select id="engine-select">
+          <option value="local">Local (U²-Net, sin internet, ~1 s: cabeza y cuello)</option>
+          <option value="gemini">Gemini (en la nube: más elaborado, con hombros)</option>
+          <option value="opencv">Lápiz de OpenCV (sin IA, instantáneo)</option>
+      </select>
+      <label for="style-select">Estilo de dibujo:</label>
+      <select id="style-select">
+          <option value="detallado">Detallado (boceto normal)</option>
+          <option value="trazo">Trazo simple: pocas líneas largas, más fácil de dibujar</option>
+          <option value="lapiz">Dibujo a lápiz de líneas, detallado (para la tableta)</option>
+      </select>
+      <p class="status">"Trazo simple" le pide a Gemini un retrato de línea continua (pocas líneas largas y fluidas, rasgos mínimos) y lo convierte a gcode pasando por SVG: menos bajadas de pluma y curvas suaves. Con el motor local o el de OpenCV el boceto es siempre el mismo; el estilo cambia solo cómo se convierte a gcode.</p>
       <button id="btn-upload" disabled>Subir y generar boceto</button>
       <p id="upload-error" class="error"></p>
     </section>
@@ -142,12 +307,24 @@
         <option value="medio" selected>Medio (recomendado)</option>
         <option value="alto">Alto (más fiel, más riesgo de fricción)</option>
       </select>
+      <label for="engine-select-2">Motor del boceto (al rechazar se genera otro con este motor):</label>
+      <select id="engine-select-2">
+          <option value="local">Local (U²-Net, sin internet, ~1 s: cabeza y cuello)</option>
+          <option value="gemini">Gemini (en la nube: más elaborado, con hombros)</option>
+          <option value="opencv">Lápiz de OpenCV (sin IA, instantáneo)</option>
+      </select>
+      <label for="style-select-2">Estilo de dibujo (al rechazar se genera otro con este estilo; al aceptar se convierte así):</label>
+      <select id="style-select-2">
+          <option value="detallado">Detallado (boceto normal)</option>
+          <option value="trazo">Trazo simple: pocas líneas largas, más fácil de dibujar</option>
+          <option value="lapiz">Dibujo a lápiz de líneas, detallado (para la tableta)</option>
+      </select>
       <div class="actions">
         <button id="btn-sketch-accept">Aceptar boceto</button>
         <button id="btn-sketch-reject" class="secondary">Rechazar (generar otro)</button>
       </div>
       <details>
-        <summary>¿Gemini falló o no te convence? Sube un boceto manual</summary>
+        <summary>¿El boceto no te convence? Subí uno hecho a mano</summary>
         <input type="file" id="manual-sketch-input" accept="image/png,image/jpeg,image/webp">
         <button id="btn-manual-sketch">Usar este boceto</button>
       </details>
@@ -157,6 +334,7 @@
       <h2>3. Trazo para el robot</h2>
       <img id="img-preview" alt="Preview del trazo">
       <p id="preview-stats" class="status"></p>
+      <p class="status hidden" id="svg-link-row"><a id="svg-link" target="_blank" rel="noopener">Ver el SVG (las líneas que se van a dibujar)</a></p>
       <label for="detail-select-2">Nivel de detalle:</label>
       <select id="detail-select-2">
         <option value="bajo">Bajo (más seguro, trazos simples)</option>

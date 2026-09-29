@@ -133,11 +133,25 @@
     card.querySelector('[data-role="zeff"]').textContent = 'Z al dibujar: ' + (z - adj).toFixed(2) + ' (' + text + ')';
   }
 
+  function centerXYText() {
+    const d = state && state.profile ? state.profile.diagnostics : null;
+    const x = el('cal-center-x').value, y = el('cal-center-y').value;
+    if (x === '' || y === '') {
+      return 'Posición sin medir: el centro se calcula con las esquinas' +
+        (d ? ' (x ' + d.corners_center_xy[0].toFixed(1) + ', y ' + d.corners_center_xy[1].toFixed(1) + ')' : '') + '. ';
+    }
+    if (!d) return '';
+    const dx = Number(x) - d.corners_center_xy[0], dy = Number(y) - d.corners_center_xy[1];
+    return 'Posición: el centro real queda a ' + Math.hypot(dx, dy).toFixed(1) + ' mm del calculado con las ' +
+      'esquinas (x ' + (dx >= 0 ? '+' : '') + dx.toFixed(1) + ', y ' + (dy >= 0 ? '+' : '') + dy.toFixed(1) +
+      '); el medio del dibujo se corre eso. ';
+  }
+
   function updateCenterInfo() {
     const raw = el('cal-center-z').value;
     const plane = state && state.profile ? state.profile.diagnostics.plane_center_z : null;
     if (raw === '') {
-      el('cal-center-eff').textContent = 'Sin medir: el medio de la hoja se calcula solo con las esquinas' +
+      el('cal-center-eff').textContent = centerXYText() + 'Altura sin medir: se calcula solo con las esquinas' +
         (plane !== null ? ' (Z ' + plane.toFixed(2) + ').' : '.');
       return;
     }
@@ -148,7 +162,7 @@
       text += ' (' + (Math.abs(diff) < 0.05 ? 'igual que' : Math.abs(diff).toFixed(1) + ' mm más ' +
         (diff > 0 ? 'arriba' : 'abajo') + ' que') + ' el plano de las esquinas)';
     }
-    el('cal-center-eff').textContent = text;
+    el('cal-center-eff').textContent = centerXYText() + text;
   }
 
   function fillForm(profile) {
@@ -157,12 +171,19 @@
       fillCorner(c, profile.corners[c]);
     });
     el('cal-center-z').value = profile.center_z === null || profile.center_z === undefined ? '' : profile.center_z;
+    el('cal-center-x').value = profile.center_xy ? profile.center_xy[0] : '';
+    el('cal-center-y').value = profile.center_xy ? profile.center_xy[1] : '';
     el('cal-center-adj').value = profile.center_z_adjust_mm || 0;
     updateCenterInfo();
     el('cal-name').value = profile.name;
     el('cal-skew').value = profile.manual_skew_mm;
     el('cal-lift').value = profile.pen_lift_mm;
     el('cal-backlash').value = profile.j1_backlash_deg || 0;
+    el('cal-unidir').checked = !!profile.j1_unidirectional;
+    el('cal-tablet-mode').checked = !!profile.tablet_mode;
+    el('cal-tablet-orient').value = profile.tablet_orient || '';
+    fillFromCenter(profile);
+    el('cal-j1-direction').value = String(profile.j1_direction || 1);
     el('cal-rotation').value = String(profile.drawing_rotation_resolved);
     el('cal-rotation-info').textContent = 'El preview muestra la hoja con las esquinas "arriba" hacia arriba, ' +
       'como la ves al medirla. Girá el dibujo solo si querés la cabeza hacia otro lado de la hoja.';
@@ -211,7 +232,7 @@
       const p = t.progress || { i: 0, total: 1 };
       prog.value = p.total ? Math.round((100 * p.i) / p.total) : 0;
       el('cal-test-message').textContent = ({ outline: 'Dibujando contorno', pattern: 'Dibujando patrón',
-        face: 'Dibujando rostro', precision: 'Midiendo precisión' }[t.kind] || 'Probando') +
+        face: 'Dibujando rostro', eyes: 'Dibujando prueba de ojos', dots: 'Dibujando ojo de puntos', stipple: 'Dibujando rostro con puntos', precision: 'Midiendo precisión' }[t.kind] || 'Probando') +
         '… ' + (t.message || '') + (t.progress ? ' (' + t.progress.i + '/' + t.progress.total + ')' : '');
     } else {
       prog.classList.add('hidden');
@@ -226,13 +247,28 @@
           (t.log ? ' Registro: ' + t.log : ''));
     }
     const robotBusy = !!r.busy;
+    renderRoutines();
     document.querySelectorAll('#cal-view button').forEach((b) => {
-      if (!['cal-new', 'cal-save', 'cal-delete', 'cal-center-clear'].includes(b.id)) b.disabled = robotBusy;
+      if (!['cal-new', 'cal-save', 'cal-delete', 'cal-center-clear', 'rt-new', 'rt-rename', 'rt-delete', 'rt-stop'].includes(b.id)) {
+        b.disabled = robotBusy || !!b.dataset.fixedDisabled;
+      }
     });
+    el('rt-stop').disabled = !robotBusy && !(state.routine_task || {}).running;   // frena una rutina o un "Ir" en curso
     const isActive = state.profile && state.profile.id === state.active_id;
     el('cal-test-outline').disabled = robotBusy || !isActive;
     el('cal-test-pattern').disabled = robotBusy || !isActive;
     el('cal-test-face').disabled = robotBusy || !isActive;
+    el('cal-test-eyes').disabled = robotBusy || !isActive;
+    el('cal-test-dots').disabled = robotBusy || !isActive;
+    el('cal-test-stipple').disabled = robotBusy || !isActive || !state.stipple;
+    const sp = state.stipple;
+    el('cal-stipple-img').classList.toggle('hidden', !sp);
+    if (sp) {
+      if (el('cal-stipple-img').getAttribute('src') !== sp.preview_url) el('cal-stipple-img').src = sp.preview_url;
+      el('cal-stipple-info').textContent = sp.dots + ' puntos (' + sp.method + ', ' + sp.bands + ' bandas), de ' + sp.source +
+        (sp.found ? '' : ' (no se detectó una cara: se usó el centro de la foto)') +
+        '. Dibujarlo lleva unos ' + sp.estimated_minutes + ' min.';
+    }
     el('cal-test-precision').disabled = robotBusy || !isActive;
     el('cal-activate').disabled = robotBusy || isActive;
     el('cal-delete').disabled = isActive;
@@ -241,7 +277,70 @@
       'activo (' + activeName + '). Tocá "Usar este perfil" para probar este.';
   }
 
+  // direcciones de /tablet y /resultado con su QR (la IP cambia con la red)
+  async function loadConnection() {
+    const box = el('cal-conn');
+    try {
+      const res = await fetch('/api/connection', { cache: 'no-store' });
+      const data = await res.json();
+      box.innerHTML = '';
+      if (!data.addresses.length) {
+        box.textContent = 'No se encontró una red: conectá esta PC a un Wi-Fi o a un hotspot.';
+        return;
+      }
+      data.addresses.forEach((a) => {
+        const ip = document.createElement('div');
+        ip.className = 'conn-ip';
+        ip.textContent = 'Red ' + a.ip + (a.hotspot ? ' (zona con cobertura de esta PC)' : '');
+        box.appendChild(ip);
+        a.pages.forEach((p) => {
+          const card = document.createElement('div');
+          card.className = 'conn-card';
+          const name = document.createElement('div');
+          name.className = 'name';
+          name.textContent = p.name;
+          const img = document.createElement('img');
+          img.alt = 'QR para abrir ' + p.url;
+          img.src = '/api/connection/qr.svg?url=' + encodeURIComponent(p.url);
+          const code = document.createElement('code');
+          code.textContent = p.url;
+          card.append(name, img, code);
+          box.appendChild(card);
+        });
+      });
+    } catch (err) {
+      box.textContent = 'No se pudieron obtener las direcciones: ' + err.message;
+    }
+  }
+  el('cal-conn-refresh').addEventListener('click', loadConnection);
+  loadConnection();
+
+  function renderSketchEngine() {
+    const sel = el('cal-sketch-engine');
+    if (!sel.options.length) (state.sketch_engines || []).forEach((e) => sel.appendChild(new Option(e.name, e.id)));
+    if (document.activeElement !== sel) sel.value = state.sketch_engine;
+    el('cal-sketch-engine-warn').textContent = state.sketch_engine === 'local' && !state.local_sketch_ready
+      ? 'Falta el modelo local (models/u2net_portrait.onnx): se va a usar Gemini.' : '';
+  }
+
+  function renderTablet() {
+    const input = el('cal-tablet-line');
+    if (document.activeElement !== input) input.value = state.tablet_line_mm;
+  }
+
+  function renderEyeStyles() {
+    const sel = el('cal-eye-style');
+    if (!sel.options.length) {
+      sel.appendChild(new Option('Los del boceto (sin cambiar)', ''));
+      state.eye_styles.forEach((s, i) => sel.appendChild(new Option((i + 1) + '. ' + s.name, s.id)));
+    }
+    sel.value = state.eye_style || '';
+  }
+
   function renderProfiles() {
+    renderEyeStyles();
+    renderTablet();
+    renderSketchEngine();
     const sel = el('cal-profile');
     sel.innerHTML = '';
     state.profiles.forEach((p) => {
@@ -279,7 +378,7 @@
       renderDiagnostics(state.profile);
     }
     renderStatus();
-    if (state.task.running || state.robot.busy) startPolling(); else stopPolling();
+    if (state.task.running || state.robot.busy || (state.routine_task || {}).running) startPolling(); else stopPolling();
   }
 
   async function refresh(profileId, refillForm) {
@@ -322,8 +421,14 @@
       manual_skew_mm: Number(el('cal-skew').value),
       pen_lift_mm: Number(el('cal-lift').value),
       j1_backlash_deg: Number(el('cal-backlash').value || 0),
+      j1_unidirectional: el('cal-unidir').checked,
+      tablet_mode: el('cal-tablet-mode').checked,
+      tablet_orient: el('cal-tablet-orient').value || null,
+      j1_direction: Number(el('cal-j1-direction').value),
       drawing_rotation: el('cal-rotation').value,
       center_z: el('cal-center-z').value === '' ? null : Number(el('cal-center-z').value),
+      center_xy: el('cal-center-x').value === '' || el('cal-center-y').value === '' ? null :
+        [Number(el('cal-center-x').value), Number(el('cal-center-y').value)],
       center_z_adjust_mm: Number(el('cal-center-adj').value || 0),
       corners: corners,
       z_adjust_mm: zAdjust,
@@ -364,6 +469,10 @@
   }));
 
   ['cal-name', 'cal-skew', 'cal-lift', 'cal-backlash', 'cal-rotation'].forEach((id) => el(id).addEventListener('input', markDirty));
+  el('cal-unidir').addEventListener('change', markDirty);
+  el('cal-tablet-mode').addEventListener('change', markDirty);
+  el('cal-tablet-orient').addEventListener('change', markDirty);
+  el('cal-j1-direction').addEventListener('change', markDirty);
 
   // --- Esquinas ------------------------------------------------------------
   function labelOf(corner) {
@@ -372,42 +481,109 @@
 
   async function cornerAction(corner, action) {
     await run(async () => {
-      if (action === 'capture') {
-        const data = await api(profileUrl('/capture/' + corner), 'POST');
-        apply(data, false);
-        if (corner === 'center') {
-          el('cal-center-z').value = data.captured.coords[2];
-          updateCenterInfo();
-          el('cal-coords').textContent = 'Centro capturado: Z ' + data.captured.coords[2] +
-            ' (solo se guarda la altura).';
-        } else {
-          fillCorner(corner, data.captured.coords);
-          el('cal-coords').textContent = labelOf(corner) + ' capturada: ' + data.captured.coords.join(', ');
-        }
-        return;
+      try {
+        await cornerActionInner(corner, action);
+      } catch (err) {
+        // el error general sale al final de la pagina: el del centro tambien en su tarjeta
+        if (corner === 'center') el('cal-center-eff').textContent = 'No se pudo: ' + err.message;
+        throw err;
       }
-      if (dirty) {
-        throw new Error('Guardá los cambios primero: el brazo va a la posición guardada, no a la editada.');
-      }
-      if (action === 'touch' && !confirm('El brazo va a ir a la esquina y bajar hasta tocar el papel. ¿Seguir?')) {
-        return;
-      }
-      el('cal-coords').textContent = 'Moviendo a ' + labelOf(corner) + '…';
-      apply(await api(profileUrl('/goto/' + corner), 'POST', { hover_mm: action === 'touch' ? 0 : 10 }), false);
-      el('cal-coords').textContent = 'En ' + labelOf(corner) +
-        (action === 'touch' ? ' (tocando).' : ' (10 mm arriba).');
     });
   }
+
+  async function cornerActionInner(corner, action) {
+    if (action === 'capture') {
+      const data = await api(profileUrl('/capture/' + corner), 'POST');
+      apply(data, false);
+      if (corner === 'center') {
+        el('cal-center-x').value = data.captured.coords[0];
+        el('cal-center-y').value = data.captured.coords[1];
+        el('cal-center-z').value = data.captured.coords[2];
+        updateCenterInfo();
+        el('cal-coords').textContent = 'Centro capturado y guardado: x ' + data.captured.coords[0] + ', y ' +
+          data.captured.coords[1] + ', Z ' + data.captured.coords[2] + '.';
+      } else {
+        fillCorner(corner, data.captured.coords);
+        el('cal-coords').textContent = labelOf(corner) + ' capturada: ' + data.captured.coords.join(', ');
+      }
+      return;
+    }
+    if (dirty) {
+      throw new Error('Guardá los cambios primero: el brazo va a la posición guardada, no a la editada.');
+    }
+    if (action === 'touch' && !confirm('El brazo va a ir a la esquina y bajar hasta tocar el papel. ¿Seguir?')) {
+      return;
+    }
+    el('cal-coords').textContent = 'Moviendo a ' + labelOf(corner) + '…';
+    apply(await api(profileUrl('/goto/' + corner), 'POST', { hover_mm: action === 'touch' ? 0 : 10 }), false);
+    el('cal-coords').textContent = 'En ' + labelOf(corner) +
+      (action === 'touch' ? ' (tocando).' : ' (10 mm arriba).');
+  }
+
+  // --- Calibrar desde el centro -------------------------------------------------
+  let fcOrientation = null;   // rx, ry, rz leidos del brazo (la punta vertical)
+  function fillFromCenter(profile) {
+    const p = profile.center_calib;
+    const set = (id, v) => { if (document.activeElement !== el(id)) el(id).value = v; };
+    if (p) {
+      set('cal-fc-x', p.center[0]); set('cal-fc-y', p.center[1]); set('cal-fc-z', p.center[2]);
+      set('cal-fc-w', p.width_cm); set('cal-fc-h', p.height_cm); set('cal-fc-angle', p.angle_deg);
+      set('cal-fc-sag', p.sag_mm_per_10cm);
+      fcOrientation = p.center.slice(3);
+    } else if (el('cal-fc-w').value === '') {
+      // sin calibracion desde el centro: el tamano actual del area como punto de partida
+      const a = state.area_mm || [0, 0];
+      set('cal-fc-w', (a[0] / 10).toFixed(1)); set('cal-fc-h', (a[1] / 10).toFixed(1));
+      set('cal-fc-angle', 0); set('cal-fc-sag', 0);
+    }
+  }
+  function fcBody(preview) {
+    const nums = ['cal-fc-x', 'cal-fc-y', 'cal-fc-z'].map((id) => el(id).value);
+    if (nums.some((v) => v === '')) throw new Error('Falta el centro: apoyá la punta en el centro de la hoja y tocá "Leer posición del brazo".');
+    // orientacion: la del brazo al leer el centro; si no, la de la esquina de arriba a la izquierda
+    const orient = fcOrientation || (state.profile && state.profile.corners.top_left.slice(3)) || [180, 0, 0];
+    return { center: nums.map(Number).concat(orient.map(Number)), width_cm: Number(el('cal-fc-w').value),
+             height_cm: Number(el('cal-fc-h').value), angle_deg: Number(el('cal-fc-angle').value || 0),
+             sag_mm_per_10cm: Number(el('cal-fc-sag').value || 0), preview: !!preview };
+  }
+  function describeFromCenter(info) {
+    const c = info.corners;
+    const parts = Object.keys(c).map((k) => state.corner_labels[k] + ': a ' + c[k].reach_mm.toFixed(0) + ' mm de la base, Z ' +
+      (c[k].dz_mm >= 0 ? '+' : '') + c[k].dz_mm.toFixed(1) + ' mm');
+    return 'Centro a ' + info.center_reach_mm.toFixed(0) + ' mm de la base. ' + parts.join(' · ') + '.' +
+      (info.warnings.length ? ' ATENCIÓN: ' + info.warnings.join('; ') + '.' : '');
+  }
+  el('cal-fc-read').addEventListener('click', () => run(async () => {
+    const data = await api('/api/calibration/robot/read?profile=' + encodeURIComponent(selectedId), 'POST');
+    apply(data, false);
+    if (!data.coords) throw new Error('El brazo no devolvió su posición.');
+    el('cal-fc-x').value = data.coords[0]; el('cal-fc-y').value = data.coords[1]; el('cal-fc-z').value = data.coords[2];
+    fcOrientation = data.coords.slice(3);
+    el('cal-fc-info').textContent = 'Centro leído: x ' + data.coords[0] + ', y ' + data.coords[1] + ', z ' + data.coords[2] + '.';
+  }));
+  el('cal-fc-preview').addEventListener('click', () => run(async () => {
+    const data = await api(profileUrl('/from-center'), 'POST', fcBody(true));
+    el('cal-fc-info').textContent = 'Sin guardar. ' + describeFromCenter(data.from_center);
+  }));
+  el('cal-fc-apply').addEventListener('click', () => run(async () => {
+    if (dirty && !confirm('Hay cambios sin guardar en el perfil: se van a perder (las esquinas se reemplazan por las calculadas). ¿Seguir?')) return;
+    if (!confirm('Se reemplazan las 4 esquinas del perfil por las calculadas desde el centro (y los ajustes de altura por esquina vuelven a 0). ¿Seguir?')) return;
+    const data = await api(profileUrl('/from-center'), 'POST', fcBody(false));
+    apply(data, true);
+    el('cal-fc-info').textContent = 'Guardado. ' + describeFromCenter(data.from_center) + ' Verificá las esquinas con "Ir encima" y "Tocar".';
+  }));
 
   el('cal-center-capture').addEventListener('click', () => cornerAction('center', 'capture'));
   el('cal-center-hover').addEventListener('click', () => cornerAction('center', 'hover'));
   el('cal-center-touch').addEventListener('click', () => cornerAction('center', 'touch'));
   el('cal-center-clear').addEventListener('click', () => {
     el('cal-center-z').value = '';
+    el('cal-center-x').value = '';
+    el('cal-center-y').value = '';
     markDirty();
     updateCenterInfo();
   });
-  ['cal-center-z', 'cal-center-adj'].forEach((id) => el(id).addEventListener('input', () => {
+  ['cal-center-x', 'cal-center-y', 'cal-center-z', 'cal-center-adj'].forEach((id) => el(id).addEventListener('input', () => {
     markDirty();
     updateCenterInfo();
   }));
@@ -417,12 +593,34 @@
     return () => run(async () => {
       const data = await api('/api/calibration/robot/' + action + '?profile=' + encodeURIComponent(selectedId), 'POST');
       apply(data, false);
-      el('cal-coords').textContent = data.coords ? 'Posición actual: ' + data.coords.join(', ') : message;
+      el('cal-coords').textContent = data.coords ? 'Posición actual: ' + data.coords.join(', ') :
+        data.servos ? Object.entries(data.servos).map(([servo, p]) => 'J' + servo + '  ' +
+          Object.entries(p).map(([k, v]) => k + '=' + (v === null ? '?' : v)).join('  ')).join('\n') : message;
     });
   }
   el('cal-release').addEventListener('click', robotAction('release', 'Brazo liberado: movelo a mano.'));
   el('cal-lock').addEventListener('click', robotAction('lock', 'Brazo trabado.'));
   el('cal-read').addEventListener('click', robotAction('read', ''));
+  el('cal-servos').addEventListener('click', robotAction('servos', ''));
+
+  function showServos(data, prefix) {
+    el('cal-coords').textContent = prefix + '\n' + Object.entries(data.servos).map(([servo, p]) => 'J' + servo +
+      '  ' + Object.entries(p).map(([k, v]) => k + '=' + (v === null ? '?' : v)).join('  ')).join('\n');
+  }
+  function j1Action(body, question) {
+    return () => run(async () => {
+      if (!confirm(question())) return;
+      const data = await api('/api/calibration/servo/j1?profile=' + encodeURIComponent(selectedId), 'POST', body());
+      apply(data, false);
+      showServos(data, 'Hecho: ' + data.servo_change + '.');
+    });
+  }
+  el('cal-j1-write').addEventListener('click', j1Action(
+    () => ({ param: el('cal-j1-param').value, value: Number(el('cal-j1-value').value) }),
+    () => '¿Escribir ' + el('cal-j1-param').value + ' = ' + el('cal-j1-value').value +
+      ' en el servo de J1? Queda guardado en el servo.'));
+  el('cal-j1-restore').addEventListener('click', j1Action(
+    () => ({ restore: true }), () => '¿Volver J1 a los valores originales (P 15, D 20, I 0)?'));
   el('cal-disconnect').addEventListener('click', robotAction('disconnect', 'Conexión cerrada.'));
 
   // --- Pruebas -------------------------------------------------------------
@@ -435,7 +633,221 @@
   el('cal-test-outline').addEventListener('click', testAction('outline', 'contorno del área'));
   el('cal-test-pattern').addEventListener('click', testAction('pattern', 'patrón de prueba'));
   el('cal-test-face').addEventListener('click', testAction('face', 'rostro de prueba'));
+  el('cal-test-eyes').addEventListener('click', testAction('eyes', 'prueba de ojos (todos los estilos, numerados)'));
+  el('cal-test-dots').addEventListener('click', testAction('dots', 'ojo grande hecho solo de puntos (varios minutos)'));
+  el('cal-test-stipple').addEventListener('click', testAction('stipple', 'rostro con puntos de la vista previa (varios minutos)'));
+  el('cal-stipple-preview').addEventListener('click', () => run(async () => {
+    const form = new FormData();
+    const file = el('cal-stipple-file').files[0];
+    if (file) form.append('image', file);
+    form.append('dots', el('cal-stipple-dots').value);
+    form.append('method', el('cal-stipple-method').value);
+    el('cal-stipple-info').textContent = 'Generando…';
+    const res = await fetch('/api/calibration/stipple?profile=' + encodeURIComponent(selectedId), { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) {
+      el('cal-stipple-info').textContent = '';
+      throw new Error(data.error || ('error ' + res.status));
+    }
+    apply(data, false);
+  }));
+  el('cal-tablet-line').addEventListener('change', () => run(async () => {
+    apply(await api('/api/drawing-settings?profile=' + encodeURIComponent(selectedId), 'POST',
+      { tablet_line_mm: Number(el('cal-tablet-line').value) }), false);
+    el('cal-test-message').textContent = 'Grosor de la tableta: ' + state.tablet_line_mm + ' mm.';
+  }));
+  el('cal-sketch-engine').addEventListener('change', () => run(async () => {
+    apply(await api('/api/drawing-settings?profile=' + encodeURIComponent(selectedId), 'POST',
+      { sketch_engine: el('cal-sketch-engine').value }), false);
+    el('cal-sketch-engine-msg').textContent = 'Guardado: las próximas fotos de la cámara usan ' +
+      el('cal-sketch-engine').selectedOptions[0].text + '.';
+  }));
+  el('cal-eye-style').addEventListener('change', () => run(async () => {
+    apply(await api('/api/drawing-settings?profile=' + encodeURIComponent(selectedId), 'POST',
+      { eye_style: el('cal-eye-style').value || null }), false);
+    el('cal-test-message').textContent = 'Estilo de ojos guardado: se usa en los retratos que generes desde ahora.';
+  }));
   el('cal-test-precision').addEventListener('click', testAction('precision', 'crucecitas de la prueba de precisión'));
+
+  // --- Marco del retrato ---------------------------------------------------------
+  async function loadFrame(data) {
+    const f = data || await api('/api/frame');
+    const img = f.sample_url || f.frame_url;
+    el('fr-preview').classList.toggle('hidden', !img);
+    if (img) el('fr-preview').src = img;
+    el('fr-preview-cap').textContent = f.sample_url ? 'Así sale (con el último retrato)' : f.frame ? 'Marco: ' + f.frame : 'Sin marco';
+    el('fr-status').textContent = f.frame ? 'La imagen que se descarga: ' + f.page_mm[0] + ' × ' + f.page_mm[1] + ' mm, ' +
+      f.page_px[0] + ' × ' + f.page_px[1] + ' px, ' + f.dpi + ' dpi.' : 'Sin marco: se descarga el retrato solo.';
+  }
+  function frameAction(fn) {
+    return () => run(async () => { const d = await fn(); if (d) await loadFrame(d); });
+  }
+  el('fr-none').addEventListener('click', frameAction(() => api('/api/frame', 'POST', { frame: '' })));
+  el('fr-sample').addEventListener('click', frameAction(() => api('/api/frame/sample', 'POST')));
+  el('fr-file').addEventListener('change', frameAction(async () => {
+    const f = el('fr-file').files[0];
+    el('fr-file').value = '';
+    if (!f) return null;
+    const form = new FormData();
+    form.append('frame', f);
+    const res = await fetch('/api/frame/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('Error ' + res.status));
+    return data;
+  }));
+  loadFrame().catch(() => {});
+
+  // --- Rutinas de movimiento -------------------------------------------------
+  let routineId = null;
+  let stepsDrawn = null;   // lo ultimo dibujado en la lista (para no pisar lo que se esta editando)
+
+  function currentRoutine() {
+    return (state.routines || []).find((r) => r.id === routineId) || null;
+  }
+
+  function routineUrl(suffix) {
+    return '/api/routines/' + encodeURIComponent(routineId) + (suffix || '');
+  }
+
+  // las respuestas de /api/routines traen solo las rutinas: se mezclan con el estado
+  function applyRoutines(data) {
+    apply(Object.assign({}, state, { routines: data.routines, routine_task: data.routine_task }), false);
+  }
+
+  function renderRoutines() {
+    const list = state.routines || [];
+    if (!list.some((r) => r.id === routineId)) routineId = list.length ? list[0].id : null;
+    const sel = el('rt-select');
+    const opts = list.map((r) => r.id + '\u0000' + r.name + ' (' + r.steps.length + ')').join('\u0001');
+    if (sel.dataset.opts !== opts) {
+      sel.innerHTML = '';
+      list.forEach((r) => sel.appendChild(new Option(r.name + ' (' + r.steps.length +
+        (r.steps.length === 1 ? ' paso)' : ' pasos)'), r.id)));
+      sel.dataset.opts = opts;
+    }
+    sel.value = routineId || '';
+
+    const routine = currentRoutine();
+    const t = state.routine_task || {};
+    const playing = t.running && t.id === routineId;
+    const box = el('rt-steps');
+    const key = JSON.stringify([routineId, routine ? routine.steps : null]);
+    if (key !== stepsDrawn && !box.contains(document.activeElement)) {
+      stepsDrawn = key;
+      box.innerHTML = '';
+      (routine ? routine.steps : []).forEach((step, i) => box.appendChild(stepRow(step, i, routine.steps.length)));
+    }
+    box.querySelectorAll('.rt-step').forEach((li, i) =>
+      li.classList.toggle('current', !!playing && t.step === i + 1));
+    el('rt-empty').textContent = !routine ? 'No hay rutinas: creá una con "Nueva rutina".' :
+      routine.steps.length ? '' : 'Esta rutina todavía no tiene pasos.';
+
+    el('rt-message').textContent = t.running ? 'Ejecutando "' + t.name + '"… ' + (t.message || '') :
+      t.error ? 'La rutina "' + t.name + '" falló: ' + t.error :
+      t.message === 'detenido' ? 'Rutina "' + t.name + '" detenida: el brazo quedó donde estaba.' :
+      t.message === 'terminado' ? 'Rutina "' + t.name + '" terminada.' : '';
+  }
+
+  function stepRow(step, i, total) {
+    const li = document.createElement('li');
+    li.className = 'rt-step';
+    const num = document.createElement('span');
+    num.className = 'num';
+    num.textContent = 'Paso ' + (i + 1);
+    const angles = document.createElement('span');
+    angles.className = 'angles';
+    angles.textContent = step.angles.map((a, j) => 'J' + (j + 1) + ' ' + a.toFixed(1) + '°').join('  ');
+    const field = (label, key, attrs) => {
+      const lab = document.createElement('label');
+      lab.textContent = label + ' ';
+      const input = document.createElement('input');
+      input.type = 'number';
+      Object.assign(input, attrs);
+      input.value = step[key];
+      input.addEventListener('change', () => editSteps((steps) => { steps[i][key] = Number(input.value); }));
+      lab.appendChild(input);
+      return lab;
+    };
+    const button = (text, title, fn, disabled) => {
+      const b = document.createElement('button');
+      b.className = 'secondary';
+      b.textContent = text;
+      b.title = title;
+      b.disabled = !!disabled;
+      b.dataset.fixedDisabled = disabled ? '1' : '';
+      b.addEventListener('click', () => run(fn));
+      return b;
+    };
+    li.append(num, angles,
+      field('Velocidad', 'speed', { min: 1, max: 100, step: 1, title: 'Velocidad para llegar a esta pose (1 a 100)' }),
+      field('Pausa (s)', 'pause_s', { min: 0, max: 30, step: 0.1, title: 'Cuánto se queda en esta pose antes de seguir' }),
+      button('Ir', 'Trabar el brazo y llevarlo a esta pose', async () => {
+        startPolling();   // mientras va, el estado muestra el brazo ocupado y habilita "Detener"
+        applyRoutines(await api(routineUrl('/goto/' + i), 'POST'));
+      }),
+      button('Reemplazar', 'Guardar la posición actual del brazo en este paso', async () => {
+        if (!confirm('¿Reemplazar el paso ' + (i + 1) + ' por la posición actual del brazo?')) return;
+        applyRoutines(await api(routineUrl('/capture'), 'POST', { index: i }));
+      }),
+      button('↑', 'Subir', () => editSteps((s) => s.splice(i - 1, 0, s.splice(i, 1)[0])), i === 0),
+      button('↓', 'Bajar', () => editSteps((s) => s.splice(i + 1, 0, s.splice(i, 1)[0])), i === total - 1),
+      button('Borrar', 'Borrar este paso', async () => {
+        if (!confirm('¿Borrar el paso ' + (i + 1) + '?')) return;
+        await editSteps((s) => s.splice(i, 1));
+      }));
+    return li;
+  }
+
+  async function editSteps(change) {
+    const steps = JSON.parse(JSON.stringify(currentRoutine().steps));
+    change(steps);
+    stepsDrawn = null;
+    try {
+      applyRoutines(await api(routineUrl(), 'PUT', { steps }));
+    } catch (err) {
+      renderRoutines();   // vuelve a mostrar lo guardado
+      throw err;
+    }
+  }
+
+  el('rt-select').addEventListener('change', () => { routineId = el('rt-select').value; renderRoutines(); });
+  el('rt-new').addEventListener('click', () => run(async () => {
+    const name = prompt('Nombre de la rutina nueva (por ejemplo: Despedida):');
+    if (!name || !name.trim()) return;
+    const data = await api('/api/routines', 'POST', { name: name.trim() });
+    routineId = data.created;
+    applyRoutines(data);
+  }));
+  el('rt-rename').addEventListener('click', () => run(async () => {
+    const routine = currentRoutine();
+    if (!routine) return;
+    const name = prompt('Nuevo nombre de la rutina:', routine.name);
+    if (!name || !name.trim()) return;
+    applyRoutines(await api(routineUrl(), 'PUT', { name: name.trim() }));
+  }));
+  el('rt-delete').addEventListener('click', () => run(async () => {
+    const routine = currentRoutine();
+    if (!routine || !confirm('¿Borrar la rutina "' + routine.name + '" con sus ' + routine.steps.length + ' pasos?')) return;
+    applyRoutines(await api(routineUrl(), 'DELETE'));
+  }));
+  el('rt-release').addEventListener('click', robotAction('release', 'Brazo liberado: llevalo a la pose y tocá "Agregar posición actual".'));
+  el('rt-lock').addEventListener('click', robotAction('lock', 'Brazo trabado.'));
+  el('rt-capture').addEventListener('click', () => run(async () => {
+    if (!routineId) throw new Error('Primero creá o elegí una rutina.');
+    const data = await api(routineUrl('/capture'), 'POST', {});
+    applyRoutines(data);
+    el('rt-message').textContent = 'Paso ' + currentRoutine().steps.length + ' agregado: ' +
+      data.captured.map((a, j) => 'J' + (j + 1) + ' ' + a.toFixed(1) + '°').join('  ');
+  }));
+  el('rt-play').addEventListener('click', () => run(async () => {
+    const routine = currentRoutine();
+    if (!routine) return;
+    if (!confirm('El brazo se va a trabar y a ejecutar "' + routine.name + '". ¿Está libre el espacio alrededor?')) return;
+    applyRoutines(await api(routineUrl('/play'), 'POST', { repeat: Number(el('rt-repeat').value || 1) }));
+  }));
+  el('rt-stop').addEventListener('click', () => run(async () => {
+    applyRoutines(await api('/api/routines/stop', 'POST'));
+  }));
 
   // nombre del perfil activo en el encabezado, tambien en la pestaña Dibujar
   refresh(null, true);

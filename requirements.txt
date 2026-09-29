@@ -21,3 +21,13 @@ scipy>=1.10
 # usa una heuristica de posicion (degrada con gracia). Descarga un modelo de
 # ~4MB a lib/.cache/ la primera vez que se usa.
 mediapipe>=1.0
+
+# Descarga de retratos con QR desde la tableta (share.py): sube la imagen a
+# Firebase Storage (cuenta de servicio *firebase-adminsdk*.json, fuera de git)
+# y genera el QR en el servidor.
+firebase-admin>=6.0
+segno>=1.5
+# boceto local (local_sketch.py, modelo en models/u2net_portrait.onnx)
+onnxruntime>=1.17
+# optimizacion del recorrido (pipeline.optimize_moves)
+vpype>=1.14
