@@ -30,6 +30,22 @@
     </section>
 
     <section class="stage">
+      <h2>Método del boceto (foto con la cámara)</h2>
+      <p class="status">Con qué se pasa a dibujo la foto que la persona se toma con la cámara en la pantalla del público (<code>/resultado</code>). Se aplica desde la próxima foto. También es el que aparece elegido por defecto en la pestaña Dibujar.</p>
+      <div class="row fields">
+        <label>Método <select id="cal-sketch-engine"></select></label>
+      </div>
+      <ul class="status engine-help">
+        <li><strong>Local (U²-Net)</strong>: en esta PC, sin internet, en ~1 segundo. Dibuja cabeza y cuello; los ojos se dibujan a partir de la cara detectada.</li>
+        <li><strong>Gemini</strong>: en la nube, más elaborado y parecido (hombros, ropa, ojos del propio dibujo). Tarda más y necesita internet y la clave de la API.</li>
+        <li><strong>Lápiz de OpenCV</strong>: sin IA, instantáneo; más básico.</li>
+      </ul>
+      <p class="status">Si Local o Gemini fallan, se usa el otro, y como último recurso el lápiz de OpenCV.</p>
+      <p class="status" id="cal-sketch-engine-msg"></p>
+      <p class="warning" id="cal-sketch-engine-warn"></p>
+    </section>
+
+    <section class="stage">
       <h2>Brazo</h2>
       <p class="status" id="cal-robot-status"></p>
       <div class="row">
@@ -65,6 +81,27 @@
         <li>Verificá con <em>Ir encima</em> (queda 10 mm arriba) o <em>Tocar</em> (baja hasta el papel).</li>
       </ol>
       <p class="status">"Arriba" es el lado de la hoja más lejos del robot.</p>
+      <div class="corner center-card" id="cal-fc">
+        <h3>Calibrar desde el centro (más rápido)</h3>
+        <p class="status">En vez de capturar las 4 esquinas: apoyá la punta en el centro de la hoja (liberá el brazo sosteniéndolo), tocá <em>Leer posición del brazo</em>, poné el tamaño de la hoja y tocá <em>Calcular esquinas y guardar</em>. La hoja se toma plana y horizontal; la <em>caída de Z</em> compensa que la punta cae más cuanto más lejos de la base está, por el peso del brazo: si las esquinas lejanas aprietan de más (o no llegan), subí (o bajá) ese valor y recalculá. Después verificá cada esquina con <em>Ir encima</em> / <em>Tocar</em>.</p>
+        <div class="zadj">
+          <label>Centro X <input type="number" step="0.1" id="cal-fc-x" placeholder="leer del brazo"></label>
+          <label>Centro Y <input type="number" step="0.1" id="cal-fc-y" placeholder="leer del brazo"></label>
+          <label>Centro Z <input type="number" step="0.1" id="cal-fc-z" placeholder="leer del brazo"></label>
+        </div>
+        <div class="zadj">
+          <label>Ancho de la hoja (cm) <input type="number" step="0.1" min="2" max="40" id="cal-fc-w"></label>
+          <label>Alto de la hoja (cm) <input type="number" step="0.1" min="2" max="40" id="cal-fc-h" title="De abajo (cerca del robot) hacia arriba (lejos del robot)."></label>
+          <label>Giro de la hoja (°) <input type="number" step="1" min="-180" max="180" id="cal-fc-angle" title="0 = los bordes de la hoja alineados con el robot (su &quot;arriba&quot; apunta lejos de la base). Positivo = girada hacia la izquierda del robot."></label>
+          <label>Caída de Z (mm cada 10 cm) <input type="number" step="0.1" min="-10" max="10" id="cal-fc-sag" title="Cuánto cae la punta por el peso del brazo por cada 10 cm más lejos de la base. Las esquinas más lejanas que el centro se mandan más arriba en esa proporción, y las más cercanas más abajo. 0 = sin corrección."></label>
+        </div>
+        <div class="row">
+          <button id="cal-fc-read" class="secondary">Leer posición del brazo</button>
+          <button id="cal-fc-preview" class="secondary">Ver cálculo</button>
+          <button id="cal-fc-apply">Calcular esquinas y guardar</button>
+        </div>
+        <p class="status" id="cal-fc-info"></p>
+      </div>
       <div class="corner-grid" id="cal-corners"></div>
       <div class="corner center-card">
         <h3>Centro de la hoja (posición y altura)</h3>
@@ -179,6 +216,22 @@
     </section>
 
     <section class="stage">
+      <h2>Marco del retrato</h2>
+      <p class="status">Cada retrato terminado se pone dentro del marco (en su hueco del medio) y se muestra y se descarga así, en el tamaño justo del papel 10×15 de la Canon SELPHY CP1500: <strong>100 × 148 mm, 1181 × 1748 px a 300 dpi</strong>. Para imprimir, pasá la imagen descargada a la app de Canon: entra exacta, sin recortes.</p>
+      <div class="print-grid">
+        <figure class="print-preview"><img id="fr-preview" alt="Vista previa del marco"><figcaption id="fr-preview-cap">Marco</figcaption></figure>
+        <div>
+          <div class="row">
+            <label class="btn-file">Cambiar marco… <input type="file" id="fr-file" accept="image/png,image/jpeg"></label>
+            <button id="fr-none" class="secondary">Sin marco</button>
+            <button id="fr-sample" class="secondary">Probar con el último retrato</button>
+          </div>
+          <p class="status" id="fr-status"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="stage">
       <h2>Rutinas de movimiento</h2>
       <p class="status">Movimientos para el público (saludo, invitación…). Para enseñar una rutina: elegila, tocá "Liberar brazo", llevá el brazo con la mano a la primera pose y tocá "Agregar posición actual"; repetí con cada pose, en orden. Cada paso guarda los ángulos de las 6 articulaciones, la velocidad para llegar (1 a 100) y cuánto espera ahí (s). Al ejecutar, el brazo se traba y va de pose en pose.</p>
       <p class="warning">Sostené el brazo antes de liberarlo. Antes de ejecutar, dejá libre el espacio alrededor del brazo: entre una pose y la siguiente va por el camino más corto de cada articulación, no por el que lo llevaste a mano.</p>
@@ -211,15 +264,21 @@
     <section id="stage-upload" class="stage">
       <h2>1. Subir foto</h2>
       <input type="file" id="file-input" accept="image/png,image/jpeg,image/webp">
-      <label for="own-sketch-input">¿Ya tenés un boceto hecho? Subilo acá y te saltás la generación con Gemini (opcional):</label>
+      <label for="own-sketch-input">¿Ya tenés un boceto hecho? Subilo acá y te saltás la generación del boceto (opcional):</label>
       <input type="file" id="own-sketch-input" accept="image/png,image/jpeg,image/webp">
+      <label for="engine-select">Motor del boceto (cómo se pasa la foto a dibujo):</label>
+      <select id="engine-select">
+          <option value="local">Local (U²-Net, sin internet, ~1 s: cabeza y cuello)</option>
+          <option value="gemini">Gemini (en la nube: más elaborado, con hombros)</option>
+          <option value="opencv">Lápiz de OpenCV (sin IA, instantáneo)</option>
+      </select>
       <label for="style-select">Estilo de dibujo:</label>
       <select id="style-select">
           <option value="detallado">Detallado (boceto normal)</option>
           <option value="trazo">Trazo simple: pocas líneas largas, más fácil de dibujar</option>
           <option value="lapiz">Dibujo a lápiz de líneas, detallado (para la tableta)</option>
       </select>
-      <p class="status">"Trazo simple" le pide a Gemini un retrato de línea continua (pocas líneas largas y fluidas, rasgos mínimos) y lo convierte a gcode pasando por SVG: menos bajadas de pluma y curvas suaves.</p>
+      <p class="status">"Trazo simple" le pide a Gemini un retrato de línea continua (pocas líneas largas y fluidas, rasgos mínimos) y lo convierte a gcode pasando por SVG: menos bajadas de pluma y curvas suaves. Con el motor local o el de OpenCV el boceto es siempre el mismo; el estilo cambia solo cómo se convierte a gcode.</p>
       <button id="btn-upload" disabled>Subir y generar boceto</button>
       <p id="upload-error" class="error"></p>
     </section>
@@ -248,6 +307,12 @@
         <option value="medio" selected>Medio (recomendado)</option>
         <option value="alto">Alto (más fiel, más riesgo de fricción)</option>
       </select>
+      <label for="engine-select-2">Motor del boceto (al rechazar se genera otro con este motor):</label>
+      <select id="engine-select-2">
+          <option value="local">Local (U²-Net, sin internet, ~1 s: cabeza y cuello)</option>
+          <option value="gemini">Gemini (en la nube: más elaborado, con hombros)</option>
+          <option value="opencv">Lápiz de OpenCV (sin IA, instantáneo)</option>
+      </select>
       <label for="style-select-2">Estilo de dibujo (al rechazar se genera otro con este estilo; al aceptar se convierte así):</label>
       <select id="style-select-2">
           <option value="detallado">Detallado (boceto normal)</option>
@@ -259,7 +324,7 @@
         <button id="btn-sketch-reject" class="secondary">Rechazar (generar otro)</button>
       </div>
       <details>
-        <summary>¿Gemini falló o no te convence? Sube un boceto manual</summary>
+        <summary>¿El boceto no te convence? Subí uno hecho a mano</summary>
         <input type="file" id="manual-sketch-input" accept="image/png,image/jpeg,image/webp">
         <button id="btn-manual-sketch">Usar este boceto</button>
       </details>

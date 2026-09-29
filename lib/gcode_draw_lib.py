@@ -5,6 +5,7 @@
 # hoja medidas a mano con la pluma tocando el papel (interpolacion bilineal).
 # La usan 280_draw_gcode_mapped.py y sketch_to_gcode.py.
 
+import bisect
 import math
 import re
 import time
@@ -654,8 +655,32 @@ SETTLE_PAUSE_S = 0.1       # margen extra tras asentarse (el esfero termina de a
 # Subido de 4 a 12 (2026-09-26): cada espera frena el brazo con la pluma
 # apoyada, y el arranque siguiente dejaba un "diente" en el trazo cada 4
 # puntos. Si las curvas vuelven a salir rectas, es que la cola se lleno: bajarlo.
-SYNC_EVERY = 12
+SYNC_EVERY = 5
 SYNC_STILL_S = 1.0
+# Avance de la tableta en modo tableta (ver track_tablet): se busca al brazo a
+# esto atras y adelante de donde deberia estar; cada lectura corrige la posicion
+# en esta fraccion, y la velocidad estimada (mm/s, entre estos limites) de a poco.
+TRACK_WINDOW_MM = 8.0
+TRACK_GAIN = 0.25
+TRACK_V_GAIN = 0.0   # 0: velocidad fija al ritmo de los comandos (un error sistematico de get_coords la hundia)
+TRACK_V_START = 0.9            # velocidad del brazo respecto de TABLET_SPEED_MM_S (medido: 25 vs 28)
+TRACK_V_FACTORS = (0.6, 1.2)   # velocidad estimada: entre estas veces TABLET_SPEED_MM_S (el ritmo de los comandos)
+TRACK_RELOCK_MM = 40.0         # se busca al brazo hasta esto mas adelante...
+TRACK_RELOCK_DIST_MM = 6.0     # ...y si esta ahi (a menos de esto del recorrido)
+TRACK_LOST_MM = 9.0            # ...y no donde se lo esperaba (a mas de esto)
+TRACK_RELOCK_READS = 3         # ...en esta cantidad de lecturas seguidas, se salta ahi
+TRACK_CATCHUP_MM_S = 60.0   # al terminar, lo atrasado se completa a esta velocidad
+# Dibujo continuo (draw_moves(continuous=True), p. ej. el contorno de la
+# calibracion): sin las esperas de SYNC_EVERY, y los puntos se mandan a este
+# ritmo, un poco mas rapido que el brazo, para que siempre tenga el siguiente
+# en cola y no frene entre paso y paso.
+CONTINUOUS_SPEED_MM_S = 100
+CONTINUOUS_MIN_PACING = 0.05
+# El myCobot frena del todo al final de cada comando (no encadena movimientos):
+# en modo continuo un tramo largo va en UN solo comando (fluido, frena solo en
+# las esquinas), en vez de partirse en pasos de MAX_DRAW_SEGMENT_MM. Si el
+# firmware no le encuentra camino (estos errores), se vuelve a mandar por pasos.
+NO_PATH_ERRORS = (32, 33, 34)
 
 
 def _read_xyz(mc):
@@ -790,7 +815,7 @@ def _join_close_strokes(moves, preserve_aspect, bounds, join_mm):
 
 
 def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, check_every=25, pen_lift_mm=None,
-               live=None):
+               live=None, continuous=False):
     """
     Envia al robot una lista de movimientos [(x_local, y_local, pluma_abajo), ...].
 
@@ -868,6 +893,9 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
         if tablet:   # sin esperas: solo el tiempo del recorrido
             pace(max(TABLET_MIN_PACING, dist / TABLET_SPEED_MM_S))
             return
+        if continuous and not settle:   # seguido: sin sincronizar, el brazo siempre con el siguiente en cola
+            pace(max(CONTINUOUS_MIN_PACING, dist / CONTINUOUS_SPEED_MM_S))
+            return
         if settle and WAIT_AT_PEN_TRANSITIONS:
             result = _wait_until_settled(mc, coords, expected_s=pacing, on_read=track)
             if result == 'timeout':
@@ -909,7 +937,11 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
     # solo para ubicar al brazo A LO LARGO del trazo, proyectandolo sobre los
     # tramos entre lo ya revelado y lo ultimo mandado. Nunca retrocede.
     def track(cur):
-        if live is None or cur is None:
+        if live is None:
+            return
+        if tablet:   # sin lectura tambien: sigue avanzando a la velocidad estimada
+            return track_tablet(cur)
+        if cur is None:
             return
         best = None
         for k in range(int(state['reveal']), min(state['sent_idx'], len(targets) - 1)):
@@ -923,6 +955,63 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
         if best is not None and best[1] > state['reveal']:
             state['reveal'] = best[1]
             live.reveal(state['reveal'])
+
+    def closest_on_path(cur, s_lo, s_hi):
+        """(distancia, s) del punto del recorrido entre s_lo y s_hi mas cercano a cur."""
+        cum = state['tcum']
+        lo = max(0, bisect.bisect_right(cum, s_lo) - 1)
+        hi = min(len(targets) - 1, bisect.bisect_right(cum, s_hi))
+        best = None
+        for k in range(lo, max(lo, hi)):
+            a, b = targets[k][5], targets[k + 1][5]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            l2 = dx * dx + dy * dy
+            t = 0.0 if not l2 else max(0.0, min(1.0, ((cur[0] - a[0]) * dx + (cur[1] - a[1]) * dy) / l2))
+            d = math.hypot(a[0] + dx * t - cur[0], a[1] + dy * t - cur[1])
+            if best is None or d < best[0]:
+                best = (d, cum[k] + (cum[k + 1] - cum[k]) * t)
+        return best
+
+    def track_tablet(cur):
+        """Modo tableta: el avance (longitud de recorrido s) sigue a la velocidad
+        estimada del brazo, y cada lectura de get_coords (con varios mm de error,
+        a veces sistematico, o sin lectura) solo lo corrige de a poco: se busca al
+        brazo alrededor de donde deberia estar (TRACK_WINDOW_MM). La velocidad se
+        ajusta pero queda cerca del ritmo de los comandos (TRACK_V_FACTORS), asi
+        un error sistematico no la hunde; y si el brazo aparece claramente mas
+        adelante (TRACK_RELOCK_MM), se re-engancha ahi."""
+        cum = state['tcum']
+        now = time.time()
+        if 'track_t' not in state:
+            state.update(track_t=now, s=0.0, v=TABLET_SPEED_MM_S * TRACK_V_START)
+            return
+        dt = max(0.0, now - state['track_t'])
+        state['track_t'] = now
+        s_cap = cum[min(state['sent_idx'], len(cum) - 1)]          # no mas alla de lo mandado
+        s_pred = min(state['s'] + state['v'] * dt, s_cap)
+        s_new = s_pred
+        if cur is not None:
+            best = closest_on_path(cur, s_pred - TRACK_WINDOW_MM, min(s_cap, s_pred + TRACK_WINDOW_MM))
+            far = closest_on_path(cur, s_pred + TRACK_WINDOW_MM, min(s_cap, s_pred + TRACK_RELOCK_MM))
+            lost = far is not None and far[0] < TRACK_RELOCK_DIST_MM and (best is None or best[0] > TRACK_LOST_MM)
+            state['lost'] = state.get('lost', 0) + 1 if lost else 0
+            if state['lost'] >= TRACK_RELOCK_READS:
+                s_new = far[1]            # varias lecturas seguidas: el brazo esta mas adelante, re-enganche
+                state['lost'] = 0
+            elif best is not None:
+                innov = best[1] - s_pred
+                s_new = s_pred + TRACK_GAIN * innov
+                if dt > 0:
+                    v_lo, v_hi = (f * TABLET_SPEED_MM_S for f in TRACK_V_FACTORS)
+                    state['v'] = min(v_hi, max(v_lo, state['v'] + TRACK_V_GAIN * innov / max(dt, 0.05)))
+        s_new = min(max(s_new, state['s']), s_cap)
+        state['s'] = s_new
+        j = max(0, min(bisect.bisect_right(cum, s_new) - 1, len(cum) - 2))
+        seg = cum[j + 1] - cum[j]
+        r = j + ((s_new - cum[j]) / seg if seg > 0 else 0.0)
+        if r > state['reveal']:
+            state['reveal'] = r
+            live.reveal(r)
 
     def pace(seconds):
         """Espera `seconds`; con live, leyendo la posicion mientras tanto."""
@@ -954,6 +1043,12 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
     if tablet:
         moves = _join_close_strokes(moves, preserve_aspect, bounds, TABLET_JOIN_MM)
     targets = list(iter_target_coords(moves, preserve_aspect, bounds, lift_mm))
+    # longitud de recorrido (x, y) hasta cada punto: para el avance de la tableta (track)
+    state['tcum'] = [0.0]
+    for a, b in zip(targets, targets[1:]):
+        state['tcum'].append(state['tcum'][-1] + math.dist(a[5][:2], b[5][:2]))
+    if len(state['tcum']) < 2:
+        state['tcum'].append(state['tcum'][-1])
 
     def first_stroke_direction(k):
         """Sentido de giro de la base del primer tramo que mueve J1 en el
@@ -996,10 +1091,12 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
 
         # Tramo largo con la pluma abajo: se parte en pasos de hasta
         # MAX_DRAW_SEGMENT_MM (ver ahi el porque).
+        whole = False
         if pen_down and prev_pen_down and prev_coords is not None and not tablet:   # en la tableta: tramos enteros
             seg = math.dist(prev_coords[:3], coords[:3])
             n_steps = int(math.ceil(seg / MAX_DRAW_SEGMENT_MM))
-            for k in range(1, n_steps):
+            whole = continuous and n_steps > 1   # continuo: el tramo entero, de una (ver NO_PATH_ERRORS)
+            for k in range(1, 1 if whole else n_steps):
                 t = k / n_steps
                 mid = [a + (b - a) * t for a, b in zip(prev_coords, coords)]
                 send(mid, speed, settle=False, label=f'tramo intermedio {k}/{n_steps} hacia el punto {i}')
@@ -1015,6 +1112,19 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
             hover[2] += LANDING_HOVER_MM
             send(hover, TRAVEL_SPEED, settle=True, label=f'sobre el punto {i}')
             send(coords, LANDING_SPEED, settle=True, label=f'punto {i}')
+        elif whole:
+            send(coords, speed, settle=False, label=f'punto {i} (tramo entero)')
+            code = _check_and_clear_error(mc)
+            if code in NO_PATH_ERRORS:
+                # el firmware descarto el movimiento: otra vez, por pasos cortos
+                print(f'    el tramo entero hacia el punto {i} no tiene camino lineal: se manda por pasos', flush=True)
+                for k in range(1, n_steps + 1):
+                    t = k / n_steps
+                    step = [a + (b - a) * t for a, b in zip(prev_coords, coords)]
+                    send(step, speed, settle=False, label=f'paso {k}/{n_steps} hacia el punto {i}')
+                    note_error(i, _check_and_clear_error(mc))
+            else:
+                note_error(i, code)
         else:
             send(coords, speed, settle=landing, label=f'punto {i}')
 
@@ -1051,6 +1161,20 @@ def draw_moves(mc, moves, preserve_aspect=False, bounds=None, progress_cb=None, 
         # los comandos pueden ir por delante del brazo: esperar a que llegue al final
         # antes de dar el dibujo por terminado (la tableta sigue su avance real)
         _wait_until_settled(mc, prev_coords, expected_s=0.5, xy_only=True, still_time=0.4, on_read=track)
+        # el brazo ya llego: lo que la tableta tenga atrasado se completa a una velocidad
+        # que se vea dibujar (no de un salto)
+        if live is not None and state.get('tcum'):
+            cum = state['tcum']
+            s_now = state.get('s', 0.0)
+            while s_now < cum[-1]:
+                time.sleep(0.05)
+                s_now = min(cum[-1], s_now + TRACK_CATCHUP_MM_S * 0.05)
+                j = max(0, min(bisect.bisect_right(cum, s_now) - 1, len(cum) - 2))
+                seg = cum[j + 1] - cum[j]
+                r = j + ((s_now - cum[j]) / seg if seg > 0 else 0.0)
+                if r > state['reveal']:
+                    state['reveal'] = r
+                    live.reveal(r)
         path = sum(math.dist(a[5][:2], b[5][:2]) for a, b in zip(targets, targets[1:]))
         took = time.time() - start_time
         print(f'Modo tableta: {path:.0f} mm en {took:.1f} s = {path / max(took, 1e-6):.1f} mm/s reales '

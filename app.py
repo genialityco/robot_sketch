@@ -102,6 +102,9 @@ def _public(job):
         preview_url=url('preview_path'),
         svg_url=url('svg_path'),
         style=job.get('style', gemini_sketch.DEFAULT_STYLE),
+        engine=_job_engine(job),
+        engine_name=SKETCH_ENGINES[_job_engine(job)],
+        sketch_engine=job.get('sketch_engine'),
         preview_stats=job.get('preview_stats'),
         draw_progress=job.get('draw_progress'),
         draw_error=job.get('draw_error'),
@@ -122,8 +125,11 @@ def _style_from(value):
 
 @app.route('/api/styles', methods=['GET'])
 def list_styles():
+    import local_sketch
     return jsonify(styles=[dict(id=k, name=v[0]) for k, v in gemini_sketch.STYLES.items()],
-                   default=gemini_sketch.DEFAULT_STYLE)
+                   default=gemini_sketch.DEFAULT_STYLE,
+                   engines=[dict(id=k, name=v) for k, v in SKETCH_ENGINES.items()],
+                   engine_default=_drawing_settings()['sketch_engine'], local_ready=local_sketch.available())
 
 
 @app.route('/api/jobs', methods=['POST'])
@@ -140,8 +146,70 @@ def create_job():
     file.save(path)
     job['original_path'] = path
     job['style'] = _style_from(request.form.get('style'))
+    try:
+        job['engine'] = _engine_from(request.form.get('engine'))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     job['stage'] = 'uploaded'
     return jsonify(_public(job))
+
+
+# Motores del boceto (foto -> dibujo de lineas). El elegido en la calibracion
+# (drawing_settings: sketch_engine) va primero; si falla, el otro; y para el
+# estilo lapiz, al final el lapiz de OpenCV (retrato_lapiz.opencv_pencil).
+SKETCH_ENGINES = {'local': 'Local (U²-Net, sin internet, ~1 s)', 'gemini': 'Gemini (en la nube)',
+                  'opencv': 'Lápiz de OpenCV (sin IA, instantáneo)'}
+SKETCH_ENGINE_DEFAULT = 'local'
+AI_ENGINES = ('local', 'gemini')   # los que se reemplazan entre si si uno falla
+
+
+def _job_engine(job):
+    """El motor elegido para este trabajo (pestana Dibujar) o, si no eligio,
+    el de la calibracion (el que usa la pantalla del publico)."""
+    return job.get('engine') if job.get('engine') in SKETCH_ENGINES else _drawing_settings()['sketch_engine']
+
+
+def _engine_from(value):
+    """Motor pedido en un formulario: None si no vino (se usa el de la calibracion)."""
+    if value in (None, ''):
+        return None
+    if value not in SKETCH_ENGINES:
+        raise ValueError('motor de boceto desconocido: %s' % value)
+    return value
+
+
+def _make_sketch(job, out_path):
+    """Genera el boceto con el motor elegido (ver _job_engine) y, si falla, con
+    el otro; en el estilo lapiz, al final el lapiz de OpenCV. Devuelve una nota
+    si se uso un respaldo (o None); RuntimeError si no salio ninguno."""
+    import local_sketch
+    import retrato_lapiz
+    engine = _job_engine(job)
+    if engine == 'opencv':   # elegido a proposito: sin IA
+        retrato_lapiz.opencv_pencil(job['original_path'], out_path)
+        job['sketch_engine'] = 'opencv'
+        return None
+    order = [engine] + [e for e in AI_ENGINES if e != engine]
+    errors = []
+    for eng in order:
+        try:
+            if eng == 'local':
+                local_sketch.generate(job['original_path'], out_path)
+            else:
+                gemini_sketch.generate_sketch(job['original_path'], out_path,
+                                              job.get('style', gemini_sketch.DEFAULT_STYLE))
+            job['sketch_engine'] = eng
+            if eng == engine:
+                return None
+            return '%s no funciono (%s): se uso %s.' % (SKETCH_ENGINES[engine], errors[0][:120], SKETCH_ENGINES[eng])
+        except Exception as exc:
+            traceback.print_exc()
+            errors.append(str(exc))
+    if job.get('style') == 'lapiz':   # respaldo sin red ni modelo (ver retrato_lapiz.opencv_pencil)
+        retrato_lapiz.opencv_pencil(job['original_path'], out_path)
+        job['sketch_engine'] = 'opencv'
+        return 'No salio el boceto (%s): se uso el lapiz de OpenCV.' % ' / '.join(e[:80] for e in errors)
+    raise RuntimeError(' / '.join(errors))
 
 
 def _run_sketch(job_id):
@@ -151,16 +219,7 @@ def _run_sketch(job_id):
     job['sketch_note'] = None
     try:
         out_path = os.path.join(_job_dir(job_id), 'sketch.png')
-        try:
-            gemini_sketch.generate_sketch(job['original_path'], out_path, job.get('style', gemini_sketch.DEFAULT_STYLE))
-        except Exception as exc:
-            if job.get('style') != 'lapiz':
-                raise
-            # el retrato a lapiz tiene respaldo sin Gemini (ver retrato_lapiz.opencv_pencil)
-            traceback.print_exc()
-            import retrato_lapiz
-            retrato_lapiz.opencv_pencil(job['original_path'], out_path)
-            job['sketch_note'] = 'Gemini no respondio (%s): se uso el lapiz de OpenCV.' % str(exc)[:120]
+        job['sketch_note'] = _make_sketch(job, out_path)
         job['sketch_path'] = out_path
         job['crop'] = None  # boceto nuevo: el recorte anterior ya no aplica
         job['stage'] = 'sketch_ready'
@@ -205,13 +264,18 @@ def upload_manual_sketch(job_id):
 # ---------------------------------------------------------------------------
 @app.route('/api/jobs/<job_id>/sketch/reject', methods=['POST'])
 def reject_sketch(job_id):
-    """Rechazar el boceto: se vuelve a pedir a Gemini, con el estilo que
-    venga en el form (o el mismo de antes)."""
+    """Rechazar el boceto (o reintentar si fallo): se genera otro, con el estilo
+    y el motor que vengan en el form (o los mismos de antes)."""
     job = _get_job(job_id)
-    if job['stage'] != 'sketch_ready':
+    if job['stage'] not in ('sketch_ready', 'sketch_failed'):
         return jsonify(error='etapa invalida: %s' % job['stage']), 409
     if request.form.get('style'):
         job['style'] = _style_from(request.form.get('style'))
+    try:
+        if request.form.get('engine'):
+            job['engine'] = _engine_from(request.form.get('engine'))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
     threading.Thread(target=_run_sketch, args=(job_id,), daemon=True).start()
     job['stage'] = 'sketching'
     return jsonify(_public(job))
@@ -314,6 +378,9 @@ def _build_gcode(job, detail):
     if not moves:
         raise RuntimeError('No quedaron trazos utilizables con este nivel de detalle '
                             '(probá un nivel mas alto).')
+    # recorrido optimizado (vpype): menos bajadas de pluma y menos viaje. Antes de
+    # los ojos de estilo: sus curvas no se unen nunca (ver eye_styles)
+    moves = pl.optimize_moves(moves, pl._px_to_mm_scale(moves, rotation))
     if use_eye_style:
         moves += pl.eye_style_moves(eye_style, eyes, pl._px_to_mm_scale(moves, rotation))
     job['eyes_note'] = (('ojos: estilo %d, %s' % (pl.eye_styles.STYLE_IDS.index(eye_style) + 1,
@@ -338,6 +405,43 @@ def _build_gcode(job, detail):
     job['preview_stats'] = stats
 
 
+def _split_textures(job, source, rotation):
+    """Zonas de textura del boceto (ver texturas.py): devuelve (boceto sin ellas,
+    trazos del rayado en pixeles de trabajo con Y hacia arriba, como los moves).
+    Sin texturas: (el mismo boceto, [])."""
+    import shutil
+    import numpy as np
+    import sketch_svg
+    import texturas
+    try:
+        img = pl.dp.load_image(source)
+        h = img.shape[0]
+        ys, xs = np.nonzero(pl.dp.sketch_to_mask(img))
+        if not len(xs):
+            return source, []
+        # mm por pixel de trabajo, como va a quedar el dibujo (encuadre de la tinta)
+        mm = pl._px_to_mm_scale([(float(xs.min()), float(h - ys.max()), True),
+                                 (float(xs.max()), float(h - ys.min()), True)], rotation)
+        _core, _eyes, pts = pl.locate_face(source, with_points=True)
+        clean = os.path.join(_job_dir(job['id']), 'sketch_limpio.png')
+        strokes, _region, info = texturas.split_textures(source, mm, clean, texturas.feature_zones(pts, h))
+        job['textures'] = info
+        if not info['zones']:
+            return source, []
+        if os.path.exists(source + '.landmarks.json'):   # los landmarks del boceto local valen igual
+            shutil.copy(source + '.landmarks.json', clean + '.landmarks.json')
+        step = 0.8 / mm
+        out = []
+        for st in strokes:
+            st = sketch_svg.resample(np.asarray(st, float), step)
+            if len(st) >= 2:
+                out.append(np.column_stack([st[:, 0], h - st[:, 1]]))
+        return clean, out
+    except Exception:
+        traceback.print_exc()   # si algo falla, el boceto como estaba
+        return source, []
+
+
 def _build_pencil(job, source):
     """Dibujo a lapiz de lineas (ver retrato_lapiz.py), en dos versiones: la
     tableta muestra el dibujo DETALLADO (display_moves) y el brazo recorre uno
@@ -347,15 +451,29 @@ def _build_pencil(job, source):
     import retrato_lapiz
     rotation = cal.active_rotation_deg()
     svg_path = os.path.join(_job_dir(job['id']), 'sketch.svg')
+    # pelo, barba y otros rellenos: se sacan del boceto y se redibujan con un
+    # rayado que sigue la direccion del pelo (ver texturas.py): vectorizados tal
+    # cual quedaban como una red de lineas
+    source, texture = _split_textures(job, source, rotation)
     raw = pl.line_art_svg_moves(source, svg_path, 'lapiz')
     job['raw_moves'] = raw
     # ojos, cejas, nariz y boca vectorizados a mas resolucion (ver retrato_lapiz)
     detailed, _face, feature_box = retrato_lapiz.with_detailed_features(
-        source, raw, rotation, line_mm=_drawing_settings()['tablet_line_mm'])
+        source, raw, rotation, line_mm=_drawing_settings()['tablet_line_mm'],
+        # el boceto local deja los ojos flojos: se dibujan desde los landmarks (mirada igualada)
+        eyes_from='landmarks' if job.get('sketch_engine') == 'local' else 'sketch')
+    lines_only = detailed   # sin el rayado: el brazo lo recorre aparte, en zigzag
+    if texture:
+        import numpy as np
+        detailed = pl._flat_strokes_to_moves(pl.dp.order_strokes(
+            [np.asarray(st) for st in retrato_lapiz._strokes(detailed)] + texture))
     if not detailed:
         raise RuntimeError('No se encontraron lineas en el dibujo.')
     mm_per_px = pl._px_to_mm_scale(detailed, rotation)
-    robot_moves, seconds, n_lines, n_total = retrato_lapiz.robot_version(detailed, mm_per_px)
+    robot_moves, seconds, n_lines, n_total = retrato_lapiz.robot_version(
+        lines_only, mm_per_px, feature_box=feature_box, hatch=texture)
+    # la tableta no muestra lo que el brazo no recorre cerca (ver prune_display)
+    detailed, job['display_pruned'] = retrato_lapiz.prune_display(detailed, robot_moves, mm_per_px)
     display = pl.rotate_moves(detailed, rotation)
     moves = pl.rotate_moves(robot_moves, rotation)
     # marco del retrato: PORTRAIT_ASPECT vertical, centrado en el dibujo, con un
@@ -673,7 +791,23 @@ def _drawing_settings():
         data['tablet_line_mm'] = float(data.get('tablet_line_mm', TABLET_LINE_MM_DEFAULT))
     except (TypeError, ValueError):
         data['tablet_line_mm'] = TABLET_LINE_MM_DEFAULT
+    if data.get('sketch_engine') not in SKETCH_ENGINES:
+        data['sketch_engine'] = SKETCH_ENGINE_DEFAULT
+    # marco del retrato (archivo en marcos/; '' = sin marco; si nunca se eligio, marcos/marco.jpg)
+    import marco
+    if 'frame' not in data:
+        data['frame'] = FRAME_DEFAULT if os.path.exists(marco.frame_path(FRAME_DEFAULT)) else ''
+    if data['frame'] and not os.path.exists(marco.frame_path(data['frame'])):
+        data['frame'] = ''
     return data
+
+
+FRAME_DEFAULT = 'marco.jpg'
+
+
+def _save_drawing_settings(data):
+    with open(DRAWING_SETTINGS_PATH, 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, indent=2)
 
 
 # Grosor del trazo en la tableta (mm reales sobre la pantalla), tanto de las
@@ -704,9 +838,17 @@ def update_drawing_settings():
         if not TABLET_LINE_MM_RANGE[0] <= line <= TABLET_LINE_MM_RANGE[1]:
             return jsonify(error='el grosor debe estar entre %g y %g mm' % TABLET_LINE_MM_RANGE), 400
         data['tablet_line_mm'] = line
-    with open(DRAWING_SETTINGS_PATH, 'w', encoding='utf-8') as fh:
-        json.dump(data, fh, indent=2)
+    if 'sketch_engine' in body:
+        if body['sketch_engine'] not in SKETCH_ENGINES:
+            return jsonify(error='motor de boceto desconocido'), 400
+        data['sketch_engine'] = body['sketch_engine']
+    _save_drawing_settings(data)
     return jsonify(_cal_state(request.args.get('profile')))
+
+
+def _local_sketch_ready():
+    import local_sketch
+    return local_sketch.available()
 
 
 def _cal_state(selected_id=None):
@@ -727,6 +869,9 @@ def _cal_state(selected_id=None):
         eye_styles=[dict(id=s, name=n) for s, n in pl.eye_styles.STYLES],
         eye_style=_drawing_settings().get('eye_style'),
         tablet_line_mm=_drawing_settings()['tablet_line_mm'],
+        sketch_engine=_drawing_settings()['sketch_engine'],
+        sketch_engines=[dict(id=k, name=v) for k, v in SKETCH_ENGINES.items()],
+        local_sketch_ready=_local_sketch_ready(),
         stipple=_stipple_state(),
         routines=routines.listing(),
         routine_task=dict(ROUTINE_TASK),
@@ -778,6 +923,30 @@ def calibration_update(profile_id):
     except Exception as exc:
         return _cal_error(exc)
     return jsonify(_cal_state(profile_id))
+
+
+@app.route('/api/calibration/profiles/<profile_id>/from-center', methods=['POST'])
+def calibration_from_center(profile_id):
+    """Calibracion desde el centro (ver cal.corners_from_center): {center,
+    width_cm, height_cm, angle_deg, sag_mm_per_10cm}. Calcula las 4 esquinas y
+    las guarda en el perfil, con el centro medido como centro de la hoja (los
+    ajustes de altura por esquina vuelven a 0: son de la calibracion anterior).
+    Con preview=true solo devuelve el calculo, sin guardar."""
+    body = request.get_json(silent=True) or {}
+    try:
+        corners, info = cal.corners_from_center(body)
+        if body.get('preview'):
+            return jsonify(dict(_cal_state(profile_id), from_center=info))
+        center = info['params']['center']
+        changes = dict(corners=corners, z_adjust_mm={k: 0.0 for k in cal.CORNERS}, center_z=center[2],
+                       center_xy=center[:2], center_z_adjust_mm=0.0, center_calib=info['params'])
+        if profile_id == cal.active_id():
+            _without_robot_moving('guardando calibracion', lambda: cal.update(profile_id, changes))
+        else:
+            cal.update(profile_id, changes)
+    except Exception as exc:
+        return _cal_error(exc)
+    return jsonify(dict(_cal_state(profile_id), from_center=info))
 
 
 @app.route('/api/calibration/profiles/<profile_id>', methods=['DELETE'])
@@ -940,7 +1109,9 @@ def _run_cal_task(kind, moves, draw_kw=None):
                 # el contorno queda igual: sus etiquetas de esquina dependen del orden de los puntos
                 kw = dict(preserve_aspect=False, bounds=pl.lib.area_bounds(),
                           # el contorno queda igual: sus etiquetas de esquina dependen del orden de los puntos
-                          unidirectional=None if kind != 'outline' else False)
+                          unidirectional=None if kind != 'outline' else False,
+                          # el contorno, seguido: sin pausas de sincronizacion (ver lib.CONTINUOUS_SPEED_MM_S)
+                          continuous=(kind == 'outline'))
                 kw.update(draw_kw or {})
                 result = pl.draw(robot.get(), moves, progress_cb=progress_cb, check_every=1,
                                  # los puntos viajan apenas por encima del papel (ver DOTS_PEN_LIFT_MM)
@@ -1301,12 +1472,21 @@ class LivePublisher:
                                       color=d.get('color'), frame=d.get('frame'))
             else:
                 share.render_portrait(d['points'], d['area_mm'], d['rotation'], line_mm, image, frame=d.get('frame'))
+            # con marco (si hay), del tamano del papel 10x15 (ver marco.py): es la que se
+            # muestra y se descarga (y se imprime desde la app de la impresora)
+            frame = _drawing_settings()['frame']
+            shown = image
+            if frame:
+                import marco
+                shown = os.path.join(_job_dir('share'), '%s_marco.jpg' % d['id'])
+                marco.compose(image, shown, marco.frame_path(frame))
+            image_url = '/runtime/share/%s' % os.path.basename(shown)
             with self.lock:
                 if self.data['id'] == d['id']:
-                    self.data['result'] = dict(status='uploading', image_url='/runtime/share/%s.png' % d['id'])
-            portrait_id, url = share.upload(image, d['title'])
-            result = dict(status='ready', url=url, portrait_id=portrait_id,
-                          image_url='/runtime/share/%s.png' % d['id'], qr_url='/api/live/qr.svg?id=%s' % d['id'])
+                    self.data['result'] = dict(status='uploading', image_url=image_url, framed=shown != image)
+            portrait_id, url = share.upload(shown, d['title'])
+            result = dict(status='ready', url=url, portrait_id=portrait_id, framed=shown != image,
+                          image_url=image_url, qr_url='/api/live/qr.svg?id=%s' % d['id'])
         except Exception as exc:
             traceback.print_exc()
             result = dict(status='error', error=str(exc)[:300])
@@ -1355,6 +1535,80 @@ def api_live_qr():
     if d.get('id') != request.args.get('id') or result.get('status') != 'ready':
         return jsonify(error='no hay enlace listo para ese dibujo'), 404
     return app.response_class(share.qr_svg(result['url']), mimetype='image/svg+xml')
+
+
+# ---------------------------------------------------------------------------
+# Marco del retrato (ver marco.py): la imagen que se descarga, del tamano del
+# papel 10x15 de la Canon SELPHY CP1500 (se imprime desde la app de Canon)
+# ---------------------------------------------------------------------------
+def _frame_state(**extra):
+    import marco
+    frame = _drawing_settings()['frame']
+    frame_url = None
+    if frame:
+        frame_url = '/marcos/%s?v=%d' % (frame, int(os.path.getmtime(marco.frame_path(frame))))
+    return jsonify(dict(frame=frame, frame_url=frame_url, page_mm=marco.PAGE_MM, page_px=marco.PAGE_PX,
+                        dpi=marco.DPI, **extra))
+
+
+@app.route('/marcos/<path:name>')
+def serve_frame(name):
+    import marco
+    return send_from_directory(marco.FRAMES_DIR, name)
+
+
+@app.route('/api/frame', methods=['GET'])
+def frame_state():
+    return _frame_state()
+
+
+@app.route('/api/frame', methods=['POST'])
+def frame_select():
+    """{frame}: nombre de un marco de marcos/, o '' = sin marco."""
+    import marco
+    body = request.get_json(silent=True) or {}
+    name = os.path.basename(body.get('frame') or '')
+    if name and not os.path.exists(marco.frame_path(name)):
+        return jsonify(error='no existe ese marco'), 400
+    data = _drawing_settings()
+    data['frame'] = name
+    _save_drawing_settings(data)
+    return _frame_state()
+
+
+@app.route('/api/frame/upload', methods=['POST'])
+def frame_upload():
+    """Subir un marco nuevo (PNG/JPG) y usarlo: el retrato va en su hueco del medio."""
+    import marco
+    file = request.files.get('frame')
+    if file is None or file.filename == '':
+        return jsonify(error='falta la imagen del marco'), 400
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ('.png', '.jpg', '.jpeg'):
+        return jsonify(error='el marco tiene que ser PNG o JPG'), 400
+    os.makedirs(marco.FRAMES_DIR, exist_ok=True)
+    name = 'marco_%s%s' % (time.strftime('%Y%m%d_%H%M%S'), '.jpg' if ext == '.jpeg' else ext)
+    file.save(marco.frame_path(name))
+    data = _drawing_settings()
+    data['frame'] = name
+    _save_drawing_settings(data)
+    return _frame_state()
+
+
+@app.route('/api/frame/sample', methods=['POST'])
+def frame_sample():
+    """Vista previa del marco con el ultimo retrato terminado."""
+    import glob
+    import marco
+    frame = _drawing_settings()['frame']
+    if not frame:
+        return jsonify(error='no hay marco elegido'), 400
+    portraits = [p for p in glob.glob(os.path.join(_job_dir('share'), '*.png'))]
+    if not portraits:
+        return jsonify(error='todavia no hay ningun retrato terminado para probar el marco'), 400
+    out = os.path.join(_job_dir('share'), '_muestra_marco.jpg')
+    marco.compose(max(portraits, key=os.path.getmtime), out, marco.frame_path(frame))
+    return _frame_state(sample_url='/runtime/share/_muestra_marco.jpg?v=%d' % int(time.time() * 1000))
 
 
 @app.route('/tablet')
@@ -1505,6 +1759,12 @@ def _kiosk_preview(job):
     path = os.path.join(_job_dir(job['id']), 'kiosk_preview.png')
     share.render_portrait(points, cal.area_mm(), job.get('rotation', 0), _drawing_settings()['tablet_line_mm'], path,
                           side_px=1000, pencil=True, color=job.get('color'), frame=_frame_uv(job))
+    frame = _drawing_settings()['frame']
+    if frame:   # como se va a descargar e imprimir
+        import marco
+        framed = os.path.join(_job_dir(job['id']), 'kiosk_preview_marco.jpg')
+        marco.compose(path, framed, marco.frame_path(frame))
+        path = framed
     job['kiosk_preview'] = path
     job['kiosk_preview_at'] = time.time()
 

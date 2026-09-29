@@ -119,6 +119,10 @@
     position: absolute; left: 0; right: 0; bottom: clamp(10px, 1.8vmin, 22px); text-align: center;
     font: italic 400 clamp(14px, 2vmin, 22px)/1 var(--serif); color: var(--muted);
   }
+  /* retrato con marco (la imagen ya es la tarjeta impresa): sin el papel de polaroid */
+  .sheet.framed { padding: 0; background: none; box-shadow: 0 12px 30px rgba(60,40,20,.18), 0 40px 80px -20px rgba(60,40,20,.28); }
+  .sheet.framed .tape, .sheet.framed figcaption { display: none; }
+  .sheet.framed img { max-height: 76vh; border-radius: 3px; }
   .sheet .tape { position: absolute; top: -14px; left: 50%; width: 110px; height: 28px; transform: translateX(-50%) rotate(2deg);
                  background: rgba(230,215,185,.75); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
   .sheet .veil { position: absolute; inset: clamp(12px, 2.2vmin, 26px) clamp(12px, 2.2vmin, 26px) clamp(38px, 6vmin, 68px);
@@ -555,10 +559,12 @@
   function renderResult(d) {
     const r = d.result || {};
     if (r.image_url && $('portrait').getAttribute('src') !== r.image_url) $('portrait').src = r.image_url;
+    $('portrait').closest('.sheet').classList.toggle('framed', !!r.framed);
     // descarga directa de la imagen (desde este servidor: no depende de que se haya subido)
     if (r.image_url && $('download').getAttribute('href') !== r.image_url) {
       $('download').href = r.image_url;
-      $('download').download = 'retrato-' + new Date().toISOString().slice(0, 10) + '.png';
+      $('download').download = 'retrato-' + new Date().toISOString().slice(0, 10) +
+        (/\.jpe?g(\?|$)/i.test(r.image_url) ? '.jpg' : '.png');
       prepareShare(r.image_url, $('download').download);
     }
     $('download').hidden = !r.image_url;

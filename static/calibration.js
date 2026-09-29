@@ -182,6 +182,7 @@
     el('cal-unidir').checked = !!profile.j1_unidirectional;
     el('cal-tablet-mode').checked = !!profile.tablet_mode;
     el('cal-tablet-orient').value = profile.tablet_orient || '';
+    fillFromCenter(profile);
     el('cal-j1-direction').value = String(profile.j1_direction || 1);
     el('cal-rotation').value = String(profile.drawing_rotation_resolved);
     el('cal-rotation-info').textContent = 'El preview muestra la hoja con las esquinas "arriba" hacia arriba, ' +
@@ -314,6 +315,14 @@
   el('cal-conn-refresh').addEventListener('click', loadConnection);
   loadConnection();
 
+  function renderSketchEngine() {
+    const sel = el('cal-sketch-engine');
+    if (!sel.options.length) (state.sketch_engines || []).forEach((e) => sel.appendChild(new Option(e.name, e.id)));
+    if (document.activeElement !== sel) sel.value = state.sketch_engine;
+    el('cal-sketch-engine-warn').textContent = state.sketch_engine === 'local' && !state.local_sketch_ready
+      ? 'Falta el modelo local (models/u2net_portrait.onnx): se va a usar Gemini.' : '';
+  }
+
   function renderTablet() {
     const input = el('cal-tablet-line');
     if (document.activeElement !== input) input.value = state.tablet_line_mm;
@@ -331,6 +340,7 @@
   function renderProfiles() {
     renderEyeStyles();
     renderTablet();
+    renderSketchEngine();
     const sel = el('cal-profile');
     sel.innerHTML = '';
     state.profiles.forEach((p) => {
@@ -510,6 +520,59 @@
       (action === 'touch' ? ' (tocando).' : ' (10 mm arriba).');
   }
 
+  // --- Calibrar desde el centro -------------------------------------------------
+  let fcOrientation = null;   // rx, ry, rz leidos del brazo (la punta vertical)
+  function fillFromCenter(profile) {
+    const p = profile.center_calib;
+    const set = (id, v) => { if (document.activeElement !== el(id)) el(id).value = v; };
+    if (p) {
+      set('cal-fc-x', p.center[0]); set('cal-fc-y', p.center[1]); set('cal-fc-z', p.center[2]);
+      set('cal-fc-w', p.width_cm); set('cal-fc-h', p.height_cm); set('cal-fc-angle', p.angle_deg);
+      set('cal-fc-sag', p.sag_mm_per_10cm);
+      fcOrientation = p.center.slice(3);
+    } else if (el('cal-fc-w').value === '') {
+      // sin calibracion desde el centro: el tamano actual del area como punto de partida
+      const a = state.area_mm || [0, 0];
+      set('cal-fc-w', (a[0] / 10).toFixed(1)); set('cal-fc-h', (a[1] / 10).toFixed(1));
+      set('cal-fc-angle', 0); set('cal-fc-sag', 0);
+    }
+  }
+  function fcBody(preview) {
+    const nums = ['cal-fc-x', 'cal-fc-y', 'cal-fc-z'].map((id) => el(id).value);
+    if (nums.some((v) => v === '')) throw new Error('Falta el centro: apoyá la punta en el centro de la hoja y tocá "Leer posición del brazo".');
+    // orientacion: la del brazo al leer el centro; si no, la de la esquina de arriba a la izquierda
+    const orient = fcOrientation || (state.profile && state.profile.corners.top_left.slice(3)) || [180, 0, 0];
+    return { center: nums.map(Number).concat(orient.map(Number)), width_cm: Number(el('cal-fc-w').value),
+             height_cm: Number(el('cal-fc-h').value), angle_deg: Number(el('cal-fc-angle').value || 0),
+             sag_mm_per_10cm: Number(el('cal-fc-sag').value || 0), preview: !!preview };
+  }
+  function describeFromCenter(info) {
+    const c = info.corners;
+    const parts = Object.keys(c).map((k) => state.corner_labels[k] + ': a ' + c[k].reach_mm.toFixed(0) + ' mm de la base, Z ' +
+      (c[k].dz_mm >= 0 ? '+' : '') + c[k].dz_mm.toFixed(1) + ' mm');
+    return 'Centro a ' + info.center_reach_mm.toFixed(0) + ' mm de la base. ' + parts.join(' · ') + '.' +
+      (info.warnings.length ? ' ATENCIÓN: ' + info.warnings.join('; ') + '.' : '');
+  }
+  el('cal-fc-read').addEventListener('click', () => run(async () => {
+    const data = await api('/api/calibration/robot/read?profile=' + encodeURIComponent(selectedId), 'POST');
+    apply(data, false);
+    if (!data.coords) throw new Error('El brazo no devolvió su posición.');
+    el('cal-fc-x').value = data.coords[0]; el('cal-fc-y').value = data.coords[1]; el('cal-fc-z').value = data.coords[2];
+    fcOrientation = data.coords.slice(3);
+    el('cal-fc-info').textContent = 'Centro leído: x ' + data.coords[0] + ', y ' + data.coords[1] + ', z ' + data.coords[2] + '.';
+  }));
+  el('cal-fc-preview').addEventListener('click', () => run(async () => {
+    const data = await api(profileUrl('/from-center'), 'POST', fcBody(true));
+    el('cal-fc-info').textContent = 'Sin guardar. ' + describeFromCenter(data.from_center);
+  }));
+  el('cal-fc-apply').addEventListener('click', () => run(async () => {
+    if (dirty && !confirm('Hay cambios sin guardar en el perfil: se van a perder (las esquinas se reemplazan por las calculadas). ¿Seguir?')) return;
+    if (!confirm('Se reemplazan las 4 esquinas del perfil por las calculadas desde el centro (y los ajustes de altura por esquina vuelven a 0). ¿Seguir?')) return;
+    const data = await api(profileUrl('/from-center'), 'POST', fcBody(false));
+    apply(data, true);
+    el('cal-fc-info').textContent = 'Guardado. ' + describeFromCenter(data.from_center) + ' Verificá las esquinas con "Ir encima" y "Tocar".';
+  }));
+
   el('cal-center-capture').addEventListener('click', () => cornerAction('center', 'capture'));
   el('cal-center-hover').addEventListener('click', () => cornerAction('center', 'hover'));
   el('cal-center-touch').addEventListener('click', () => cornerAction('center', 'touch'));
@@ -593,12 +656,46 @@
       { tablet_line_mm: Number(el('cal-tablet-line').value) }), false);
     el('cal-test-message').textContent = 'Grosor de la tableta: ' + state.tablet_line_mm + ' mm.';
   }));
+  el('cal-sketch-engine').addEventListener('change', () => run(async () => {
+    apply(await api('/api/drawing-settings?profile=' + encodeURIComponent(selectedId), 'POST',
+      { sketch_engine: el('cal-sketch-engine').value }), false);
+    el('cal-sketch-engine-msg').textContent = 'Guardado: las próximas fotos de la cámara usan ' +
+      el('cal-sketch-engine').selectedOptions[0].text + '.';
+  }));
   el('cal-eye-style').addEventListener('change', () => run(async () => {
     apply(await api('/api/drawing-settings?profile=' + encodeURIComponent(selectedId), 'POST',
       { eye_style: el('cal-eye-style').value || null }), false);
     el('cal-test-message').textContent = 'Estilo de ojos guardado: se usa en los retratos que generes desde ahora.';
   }));
   el('cal-test-precision').addEventListener('click', testAction('precision', 'crucecitas de la prueba de precisión'));
+
+  // --- Marco del retrato ---------------------------------------------------------
+  async function loadFrame(data) {
+    const f = data || await api('/api/frame');
+    const img = f.sample_url || f.frame_url;
+    el('fr-preview').classList.toggle('hidden', !img);
+    if (img) el('fr-preview').src = img;
+    el('fr-preview-cap').textContent = f.sample_url ? 'Así sale (con el último retrato)' : f.frame ? 'Marco: ' + f.frame : 'Sin marco';
+    el('fr-status').textContent = f.frame ? 'La imagen que se descarga: ' + f.page_mm[0] + ' × ' + f.page_mm[1] + ' mm, ' +
+      f.page_px[0] + ' × ' + f.page_px[1] + ' px, ' + f.dpi + ' dpi.' : 'Sin marco: se descarga el retrato solo.';
+  }
+  function frameAction(fn) {
+    return () => run(async () => { const d = await fn(); if (d) await loadFrame(d); });
+  }
+  el('fr-none').addEventListener('click', frameAction(() => api('/api/frame', 'POST', { frame: '' })));
+  el('fr-sample').addEventListener('click', frameAction(() => api('/api/frame/sample', 'POST')));
+  el('fr-file').addEventListener('change', frameAction(async () => {
+    const f = el('fr-file').files[0];
+    el('fr-file').value = '';
+    if (!f) return null;
+    const form = new FormData();
+    form.append('frame', f);
+    const res = await fetch('/api/frame/upload', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('Error ' + res.status));
+    return data;
+  }));
+  loadFrame().catch(() => {});
 
   // --- Rutinas de movimiento -------------------------------------------------
   let routineId = null;

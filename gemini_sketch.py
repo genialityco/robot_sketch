@@ -15,8 +15,26 @@
 import os
 
 GEMINI_IMAGE_MODEL = os.environ.get('GEMINI_IMAGE_MODEL', 'gemini-3.1-flash-lite-image')
+
+# Lo que mas importa en todos los estilos: que la persona se reconozca. Gemini
+# tiende a embellecer, "promediar" la cara o sacar las gafas; esto va al final
+# de cada prompt. Tambien pide ojos con lineas limpias (sin rayitas en el iris):
+# los ojos del boceto pasan tal cual al gcode.
+LIKENESS = (
+    " lo mas importante es que la persona sea reconocible, que se vea que es ella: conserva exactamente la "
+    "forma de su cara y de su mandibula, las proporciones y las distancias entre los rasgos, la forma, el "
+    "tamano y la inclinacion de los ojos, los parpados y la direccion de la mirada, la forma de la nariz, de "
+    "la boca y de las cejas, las orejas, el peinado y el nacimiento del pelo, la barba o el bigote, las gafas "
+    "si las tiene, los lunares y marcas que la identifican, su edad y su expresion. no la embellezcas ni la "
+    "idealices, no la rejuvenezcas, no cambies su contextura, no la conviertas en caricatura ni en otra "
+    "persona. los ojos con lineas limpias: el contorno de los parpados, el iris como un circulo y la pupila, "
+    "sin rayitas ni textura dentro del iris"
+)
+
 GEMINI_SKETCH_PROMPT = (
-    "de la imagen de esta persona crea un boceto de su rostro con pocos trazos, y con trazos definidos trazos negros y fondo blanco, sin relleno, lineas con la misma intensidad, ojos, nariz, y boca bien definidos que el rostro este centrado, sin accesorios como gafas"
+    "de la imagen de esta persona crea un boceto de su rostro con pocos trazos, y con trazos definidos trazos "
+    "negros y fondo blanco, sin relleno, lineas con la misma intensidad, ojos, nariz, y boca bien definidos que "
+    "el rostro este centrado." + LIKENESS
 )
 
 # Estilo "trazo simple": retrato de linea continua (tipo "one line art"), con
@@ -29,7 +47,7 @@ GEMINI_LINE_ART_PROMPT = (
     "blanco. dibuja solo el contorno de la cara, la silueta del cabello con pocas lineas largas, el cuello y la "
     "linea de los hombros. ojos, cejas, nariz y boca con un trazo minimo y simple cada uno. sin sombras, sin "
     "relleno, sin texturas, sin sombreado ni rayado, sin trazos cortos, repetidos ni superpuestos, sin "
-    "garabatos. el rostro centrado y de frente, sin accesorios como gafas"
+    "garabatos. el rostro centrado y de frente." + LIKENESS
 )
 
 # Estilo "dibujo a lapiz" (para la tableta, ver retrato_lapiz.py): un dibujo
@@ -43,8 +61,8 @@ GEMINI_PENCIL_PROMPT = (
     "dos fosas nasales; boca con el contorno de ambos labios, el arco del labio superior, la linea entre los "
     "labios y las comisuras. solo lineas de grafito "
     "limpias y continuas, del mismo grosor, sin sombreado, sin rellenos, sin tramado ni degradados. fondo "
-    "completamente blanco. solo cabeza y hombros, centrado y de frente. conserva fielmente los rasgos, la "
-    "expresion, las gafas y el peinado de la persona. sin color, sin texto, sin marco ni firma"
+    "completamente blanco. solo cabeza y hombros, centrado y de frente. sin color, sin texto, sin marco ni "
+    "firma." + LIKENESS
 )
 
 # estilo -> (nombre para la interfaz, prompt)

@@ -14,6 +14,17 @@
     stages.forEach((s) => el('stage-' + s).classList.toggle('hidden', s !== name));
   }
 
+  // motor del boceto: arranca en el de la calibracion (el que usa la pantalla del publico)
+  fetch('/api/styles', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
+    ['engine-select', 'engine-select-2'].forEach((id) => { el(id).value = d.engine_default; });
+    if (!d.local_ready) {
+      ['engine-select', 'engine-select-2'].forEach((id) => {
+        const o = el(id).querySelector('option[value="local"]');
+        if (o) o.textContent += ' (falta el modelo)';
+      });
+    }
+  }).catch(() => {});
+
   async function api(path, options) {
     const res = await fetch(path, options);
     const data = await res.json().catch(() => ({}));
@@ -48,13 +59,14 @@
       case 'sketching':
         showStage('sketch');
         el('style-select-2').value = job.style || 'detallado';
+        if (job.engine) el('engine-select-2').value = job.engine;
         el('img-original').src = job.original_url || '';
         el('img-sketch').src = job.sketch_url || '';
         crop = null;
         cropSyncedFor = null;
         renderCrop();
         el('sketch-status').textContent = job.stage === 'sketching'
-          ? 'Generando boceto con Gemini...' : '';
+          ? 'Generando boceto con ' + (job.engine_name || 'el motor elegido') + '...' : '';
         el('sketch-error').textContent = '';
         el('btn-sketch-accept').disabled = job.stage !== 'sketch_ready';
         el('btn-sketch-reject').disabled = true;
@@ -63,6 +75,7 @@
       case 'sketch_ready':
         showStage('sketch');
         el('style-select-2').value = job.style || 'detallado';
+        if (job.engine) el('engine-select-2').value = job.engine;
         el('img-original').src = job.original_url || '';
         el('img-sketch').src = job.sketch_url || '';
         if (cropSyncedFor !== job.sketch_url) {
@@ -81,6 +94,7 @@
       case 'sketch_failed':
         showStage('sketch');
         el('style-select-2').value = job.style || 'detallado';
+        if (job.engine) el('engine-select-2').value = job.engine;
         el('img-original').src = job.original_url || '';
         el('sketch-status').textContent = '';
         el('sketch-error').textContent = 'No se pudo generar el boceto: ' + job.sketch_error;
@@ -182,6 +196,7 @@
       const form = new FormData();
       form.append('image', file);
       form.append('style', el('style-select').value);
+      form.append('engine', el('engine-select').value);
       const job = await api('/api/jobs', { method: 'POST', body: form });
       jobId = job.id;
       let updated;
@@ -287,6 +302,7 @@
     try {
       const form = new FormData();
       form.append('style', el('style-select-2').value);
+      form.append('engine', el('engine-select-2').value);
       const job = await api('/api/jobs/' + jobId + '/sketch/reject', { method: 'POST', body: form });
       render(job);
       startPolling();

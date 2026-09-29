@@ -8,3 +8,7 @@ lib/.cache/
 
 # credenciales de Firebase (cuenta de servicio): NUNCA al repositorio
 *firebase-adminsdk*.json
+# modelos locales (grandes; ver local_sketch.py)
+models/*.onnx
+models/*.tflite
+models/_export/

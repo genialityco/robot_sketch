@@ -27,3 +27,7 @@ mediapipe>=1.0
 # y genera el QR en el servidor.
 firebase-admin>=6.0
 segno>=1.5
+# boceto local (local_sketch.py, modelo en models/u2net_portrait.onnx)
+onnxruntime>=1.17
+# optimizacion del recorrido (pipeline.optimize_moves)
+vpype>=1.14

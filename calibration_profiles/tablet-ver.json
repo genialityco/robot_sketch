@@ -35,10 +35,10 @@
     ]
   },
   "z_adjust_mm": {
-    "top_left": -10.0,
+    "top_left": 0.0,
     "top_right": 0.0,
     "bottom_right": 0.0,
-    "bottom_left": -10.0
+    "bottom_left": 0.0
   },
   "center_z": null,
   "center_z_adjust_mm": -10.0,
@@ -52,5 +52,5 @@
   "tablet_mode": false,
   "tablet_orient": null,
   "id": "tablet-ver",
-  "updated_at": "2026-09-28 11:46"
+  "updated_at": "2026-09-29 09:36"
 }

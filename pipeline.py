@@ -202,6 +202,47 @@ def _flat_strokes_to_moves(strokes, join_gap_px=0.0, join_max_chain=JOIN_MAX_CHA
     return moves
 
 
+# Optimizacion del recorrido con vpype (https://github.com/abey79/vpype), la
+# herramienta estandar de los plotters: une los trazos cuyos extremos quedan
+# cerca (linemerge: una bajada de pluma en vez de varias), simplifica
+# (linesimplify) y los ordena para viajar lo menos posible con la pluma arriba
+# (linesort, dando vuelta trazos si conviene; --two-opt: mas fino, tarda un poco
+# mas, se hace una vez por retrato).
+VPYPE_MERGE_MM = 0.6
+VPYPE_SIMPLIFY_MM = 0.08
+VPYPE_TWO_OPT = True
+
+
+def optimize_moves(moves, mm_per_px, merge_mm=VPYPE_MERGE_MM, simplify_mm=VPYPE_SIMPLIFY_MM):
+    """moves (en pixeles) -> moves optimizados con vpype. Sin vpype, los mismos."""
+    try:
+        import vpype as vp
+        import vpype_cli
+    except ImportError:
+        return moves
+    strokes, cur = [], []
+    for x, y, pen_down in moves:
+        if pen_down:
+            cur.append(complex(x, y))
+        else:
+            if cur:
+                strokes.append(cur)
+            cur = []
+    if cur:
+        strokes.append(cur)
+    if len(strokes) < 2 or mm_per_px <= 0:
+        return moves
+    doc = vp.Document()
+    doc.add(vp.LineCollection([np.array(st) for st in strokes]), 1)
+    cmd = 'linemerge -t %.6f linesimplify -t %.6f linesort%s' % (
+        merge_mm / mm_per_px, simplify_mm / mm_per_px, ' --two-opt' if VPYPE_TWO_OPT else '')
+    out = vpype_cli.execute(cmd, doc)
+    lines = [line for layer in out.layers.values() for line in layer]
+    if not lines:
+        return moves
+    return _flat_strokes_to_moves([[(float(p.real), float(p.imag)) for p in line] for line in lines])
+
+
 def _join_nearby_strokes(moves, join_gap_px):
     """Re-agrupa `moves` (ya planos, con pluma arriba/abajo) en trazos y los
     vuelve a aplanar con _flat_strokes_to_moves(join_gap_px=...), para que
@@ -291,6 +332,7 @@ LANDMARK_INK_TOL_FRACTION = 0.012
 # zona con mucha tinta.
 LANDMARK_MIN_ON_INK = 0.85
 LANDMARK_MAX_MEDIAN_FRACTION = 0.004   # ~3px en 800
+LANDMARK_SIDECAR_MIN_ON_INK = 0.5      # landmarks que trae el boceto local (ver _sidecar_landmarks)
 
 
 def _landmarks_vs_sketch(landmark_strokes, mask):
@@ -326,7 +368,25 @@ def _face_landmarks_on_sketch(img):
         return [], None
 
 
-def _aligned_face_landmarks(img, mask, original_photo_path=None):
+def _sidecar_landmarks(sketch_path, img):
+    """Landmarks que dejo el que genero el boceto (local_sketch: los de la foto,
+    llevados al boceto) en <boceto>.landmarks.json, escalados a `img`. Solo
+    para ese mismo archivo (un recorte hecho despues es otro archivo)."""
+    import json
+    path = (sketch_path or '') + '.landmarks.json'
+    if not sketch_path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding='utf-8') as fh:
+            data = json.load(fh)
+        sw, sh = data['size']
+        kx, ky = img.shape[1] / float(sw), img.shape[0] / float(sh)
+        return [(x * kx, y * ky) for x, y in data['points']]
+    except Exception:
+        return None
+
+
+def _aligned_face_landmarks(img, mask, original_photo_path=None, sidecar_points=None):
     """
     Landmarks de ojos/cejas/nariz/labios en coordenadas del boceto, solo si
     coinciden con lo que el boceto dibujo; ([], None) si no hay forma
@@ -334,10 +394,18 @@ def _aligned_face_landmarks(img, mask, original_photo_path=None):
     original escalada al boceto (solo sirve si Gemini mantuvo el encuadre).
     Devuelve (trazos, puntos sueltos de MediaPipe).
     """
-    sources = [('boceto', lambda: _face_landmarks_on_sketch(img))]
+    # (nombre, como obtenerlos, minimo sobre la tinta)
+    sources = [('boceto', lambda: _face_landmarks_on_sketch(img), LANDMARK_MIN_ON_INK)]
+    if sidecar_points:
+        # los de la foto, ya llevados al boceto por quien lo genero (boceto local): alineados por
+        # construccion, se piden menos sobre la tinta (si el dibujo quedo flojo en la cara, justo ahi
+        # sirven para dibujar ojos y rasgos)
+        sources.append(('foto, llevados al boceto', lambda: (dp.face_landmark_strokes(img, sidecar_points) or [],
+                                                             sidecar_points), LANDMARK_SIDECAR_MIN_ON_INK))
     if original_photo_path:
-        sources.append(('foto original', lambda: _face_landmark_strokes_scaled(original_photo_path, img.shape)))
-    for name, find in sources:
+        sources.append(('foto original', lambda: _face_landmark_strokes_scaled(original_photo_path, img.shape),
+                        LANDMARK_MIN_ON_INK))
+    for name, find, min_on_ink in sources:
         landmarks, points = find()
         if not landmarks:
             continue
@@ -345,7 +413,7 @@ def _aligned_face_landmarks(img, mask, original_photo_path=None):
         all_d = np.concatenate(dists)
         on_ink = float(np.mean(all_d <= tol))
         median = float(np.median(all_d))
-        if on_ink >= LANDMARK_MIN_ON_INK and median <= LANDMARK_MAX_MEDIAN_FRACTION * max(img.shape[:2]):
+        if on_ink >= min_on_ink and median <= LANDMARK_MAX_MEDIAN_FRACTION * max(img.shape[:2]):
             print('rasgos de la cara ubicados desde el %s (%.0f%% sobre la tinta)' % (name, on_ink * 100), flush=True)
             return landmarks, points
         print('rasgos desde el %s descartados: no coinciden con el boceto (%.0f%% sobre la tinta, '
@@ -477,16 +545,22 @@ def eye_style_moves(style, eyes, mm_per_px):
     return _flat_strokes_to_moves(strokes)
 
 
-def locate_face(sketch_path, threshold=None, original_photo_path=None):
+def locate_face(sketch_path, threshold=None, original_photo_path=None, with_points=False):
     """(core_bbox, eyes) del boceto, igual que image_to_raw_moves pero sin
-    extraer trazos (lo usa el estilo "trazo simple", que saca los trazos del SVG)."""
+    extraer trazos (lo usa el estilo "trazo simple", que saca los trazos del SVG).
+    with_points: tambien los 478 landmarks, en las coordenadas de los moves
+    (Y invertido): (core_bbox, eyes, points)."""
     img = dp.load_image(sketch_path)
     mask = dp.sketch_to_mask(img, thresh=threshold)
-    landmarks, points = _aligned_face_landmarks(img, mask, original_photo_path)
+    landmarks, points = _aligned_face_landmarks(img, mask, original_photo_path,
+                                                _sidecar_landmarks(sketch_path, img))
     if not landmarks:
-        return None, None
+        return (None, None, None) if with_points else (None, None)
     h = img.shape[0]
-    return _landmark_bbox_flipped(landmarks, h), eyes_from_landmarks(points, h)
+    core, eyes = _landmark_bbox_flipped(landmarks, h), eyes_from_landmarks(points, h)
+    if with_points:
+        return core, eyes, [(float(x), float(h - y)) for x, y in points]
+    return core, eyes
 
 
 # Estilo "trazo simple" (boceto de lineas largas, ver gemini_sketch.STYLES):
@@ -626,7 +700,8 @@ def image_to_raw_moves(sketch_path, invert=False, threshold=None, min_len_px=SKE
     strokes = _extract_strokes(mask, min_len_px, SKETCH_SIMPLIFY_PX)
     img_height, img_width = img.shape[:2]
 
-    landmarks, points = _aligned_face_landmarks(img, mask, original_photo_path)
+    landmarks, points = _aligned_face_landmarks(img, mask, original_photo_path,
+                                                _sidecar_landmarks(sketch_path, img))
     core_bbox = _landmark_bbox_flipped(landmarks, img_height) if landmarks else None
     eyes = eyes_from_landmarks(points, img_height) if landmarks else None
 
@@ -1010,7 +1085,7 @@ def render_preview(moves, out_path, preserve_aspect=True, bounds=None):
 # 3. Dibujar de verdad
 # ---------------------------------------------------------------------------
 def draw(mc, moves, progress_cb=None, preserve_aspect=True, bounds=None, check_every=25, unidirectional=None,
-         pen_lift_mm=None, live=None):
+         pen_lift_mm=None, live=None, continuous=False):
     """Dibuja en el robot. Devuelve {'robot_errors': [(punto, codigo, texto)]}
     (ver lib.draw_moves). unidirectional: dibujar con la base girando en un
     solo sentido (ver j1_unidireccional); None = lo que diga el perfil activo."""
@@ -1022,7 +1097,7 @@ def draw(mc, moves, progress_cb=None, preserve_aspect=True, bounds=None, check_e
     try:
         return lib.draw_moves(mc, moves, preserve_aspect=preserve_aspect, bounds=bounds,
                               progress_cb=progress_cb, check_every=check_every, pen_lift_mm=pen_lift_mm,
-                              live=live)
+                              live=live, continuous=continuous)
     finally:
         try:
             mc.set_color(0, 255, 0)

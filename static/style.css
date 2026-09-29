@@ -163,3 +163,15 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .rt-step label { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 13px; }
 .rt-step input { width: 64px; padding: 4px 6px; font-size: 14px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
 .rt-step button { padding: 5px 9px; font-size: 13px; }
+#engine-select, #engine-select-2 { margin-bottom: 10px; }
+.print-grid { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; margin-top: 10px; }
+.print-grid > div { flex: 1 1 300px; }
+.print-preview { margin: 0; width: 200px; }
+.print-preview img { width: 100%; border: 1px solid var(--border); border-radius: 4px; background: #fff; }
+.print-preview figcaption { font-size: 12px; color: var(--muted); text-align: center; margin-top: 4px; }
+.btn-file { display: inline-block; border: 1px solid var(--accent); color: var(--accent); border-radius: 6px; padding: 9px 14px;
+            cursor: pointer; font-size: 15px; margin: 0; }
+.btn-file input { display: none; }
+.engine-help { margin: 8px 0 0; padding-left: 20px; }
+.engine-help li { margin: 3px 0; }
+#cal-sketch-engine { font-size: 15px; padding: 6px; }

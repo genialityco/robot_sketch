@@ -134,7 +134,77 @@ def _validate(profile):
                 j1_unidirectional=bool(profile.get('j1_unidirectional', False)),
                 j1_direction=-1 if str(profile.get('j1_direction', 1)) == '-1' else 1,
                 tablet_mode=bool(profile.get('tablet_mode', False)),
-                tablet_orient=_tablet_orient(profile.get('tablet_orient')))
+                tablet_orient=_tablet_orient(profile.get('tablet_orient')),
+                center_calib=_center_calib(profile.get('center_calib')))
+
+
+# ---------------------------------------------------------------------------
+# Calibracion desde el centro: se mide solo el centro de la hoja (con la punta
+# apoyada) y las esquinas se calculan con el tamano de la hoja. La hoja se
+# supone plana y horizontal; lo que cambia la altura es el brazo: por su peso,
+# la punta cae mas cuanto mas lejos de la base esta (sag_mm_per_10cm), asi que
+# las esquinas mas lejanas se mandan mas arriba y las mas cercanas mas abajo.
+# ---------------------------------------------------------------------------
+CENTER_CALIB_SIZE_CM = (2.0, 40.0)     # ancho y alto de la hoja
+CENTER_CALIB_SAG_LIMIT = 10.0          # mm por cada 10 cm de alcance
+REACH_MIN_MM, REACH_MAX_MM = 90.0, 280.0   # alcance horizontal razonable del myCobot 280 (desde la base)
+_CORNER_SIGNS = {'top_left': (1, 1), 'top_right': (1, -1), 'bottom_right': (-1, -1), 'bottom_left': (-1, 1)}  # (arriba, izquierda)
+
+
+def _num(value, what, lo, hi):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ValueError('%s no es un numero' % what)
+    if not math.isfinite(v) or not lo <= v <= hi:
+        raise ValueError('%s debe estar entre %g y %g' % (what, lo, hi))
+    return v
+
+
+def _center_calib(value):
+    """Parametros de la calibracion desde el centro (se guardan para recalcular), o None."""
+    if not value:
+        return None
+    center = value.get('center')
+    if not isinstance(center, (list, tuple)) or len(center) != 6:
+        raise ValueError('el centro necesita 6 valores (x, y, z, rx, ry, rz)')
+    return dict(center=[round(_num(v, 'el centro', -1000, 1000), 2) for v in center],
+                width_cm=round(_num(value.get('width_cm'), 'el ancho', *CENTER_CALIB_SIZE_CM), 2),
+                height_cm=round(_num(value.get('height_cm'), 'el alto', *CENTER_CALIB_SIZE_CM), 2),
+                angle_deg=round(_num(value.get('angle_deg', 0), 'el giro de la hoja', -180, 180), 2),
+                sag_mm_per_10cm=round(_num(value.get('sag_mm_per_10cm', 0), 'la caida de Z',
+                                           -CENTER_CALIB_SAG_LIMIT, CENTER_CALIB_SAG_LIMIT), 2))
+
+
+def corners_from_center(params):
+    """
+    params: center [x, y, z, rx, ry, rz] (la punta apoyada en el centro de la
+    hoja), width_cm, height_cm, angle_deg (giro de la hoja: 0 = su "arriba"
+    apunta lejos del robot, +X; positivo = girada hacia la izquierda del robot)
+    y sag_mm_per_10cm (cuanto cae la punta por el peso del brazo por cada 10 cm
+    mas lejos de la base). Devuelve (corners, info): las 4 esquinas con la
+    orientacion del centro, y por esquina su distancia a la base y la
+    correccion de Z, con avisos si alguna queda fuera del alcance del brazo.
+    """
+    p = _center_calib(params)
+    cx, cy, cz = p['center'][:3]
+    th = math.radians(p['angle_deg'])
+    up = (math.cos(th), math.sin(th))          # hacia el lado de la hoja lejos del robot
+    left = (-math.sin(th), math.cos(th))       # hacia la izquierda (vista desde el robot)
+    half_w, half_h = p['width_cm'] * 5.0, p['height_cm'] * 5.0   # mitades, en mm
+    r_center = math.hypot(cx, cy)
+    corners, info, warnings = {}, {}, []
+    for key, (su, sl) in _CORNER_SIGNS.items():
+        x = cx + su * half_h * up[0] + sl * half_w * left[0]
+        y = cy + su * half_h * up[1] + sl * half_w * left[1]
+        reach = math.hypot(x, y)
+        dz = p['sag_mm_per_10cm'] * (reach - r_center) / 100.0   # mas lejos: cae mas -> se manda mas arriba
+        corners[key] = [round(x, 2), round(y, 2), round(cz + dz, 2)] + list(p['center'][3:])
+        info[key] = dict(reach_mm=round(reach, 1), dz_mm=round(dz, 2))
+        if not REACH_MIN_MM <= reach <= REACH_MAX_MM:
+            warnings.append('la esquina %s queda a %.0f mm de la base (el brazo llega bien entre %d y %d mm)'
+                            % (CORNER_LABELS[key], reach, REACH_MIN_MM, REACH_MAX_MM))
+    return corners, dict(corners=info, center_reach_mm=round(r_center, 1), warnings=warnings, params=p)
 
 
 # Donde queda, en la pantalla de la tableta, el lado de la hoja lejos del robot
@@ -283,6 +353,7 @@ def load(profile_id):
     data.setdefault('j1_direction', 1)
     data.setdefault('tablet_mode', False)
     data.setdefault('tablet_orient', None)
+    data.setdefault('center_calib', None)
     data.setdefault('z_adjust_mm', {})  # perfiles guardados antes de existir el ajuste
     for key in CORNERS:
         data['z_adjust_mm'].setdefault(key, 0.0)
@@ -345,7 +416,8 @@ def update(profile_id, changes):
     current = load(profile_id)
     merged = dict(current)
     for key in ('name', 'manual_skew_mm', 'pen_lift_mm', 'drawing_rotation', 'center_z', 'center_z_adjust_mm', 'center_xy',
-                'j1_backlash_deg', 'j1_unidirectional', 'j1_direction', 'tablet_mode', 'tablet_orient'):
+                'j1_backlash_deg', 'j1_unidirectional', 'j1_direction', 'tablet_mode', 'tablet_orient',
+                'center_calib'):
         if key in changes:
             merged[key] = changes[key]
     if 'corners' in changes:
